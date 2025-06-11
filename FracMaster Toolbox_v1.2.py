@@ -119,7 +119,7 @@ class FracMasterApp(ctk.CTk):
         self.copy_status.configure(text="✅ Files copied successfully.")
     def __init__(self):
         super().__init__()
-        self.title("FracMaster Toolbox")
+        self.title("FracMaster Toolbox - v1.2")
         self.geometry("1300x800")
 
         self.tabs = ctk.CTkTabview(self)

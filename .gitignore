@@ -1,0 +1,13 @@
+# Build artifacts
+build/
+dist/
+*.spec
+*.exe
+*.zip
+__pycache__/
+
+# Virtual environment
+venv/
+
+# VS Code settings (optional)
+.vscode/
