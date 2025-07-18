@@ -1,0 +1,656 @@
+import customtkinter as ctk
+import os
+import shutil
+import json
+from tkinter import filedialog
+import re
+import subprocess
+import pdfplumber
+from openpyxl import Workbook
+
+# Dark mode and theme
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+class FracMasterApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.config_data = {}
+        self.title("FracMaster Toolbox - v1.4")
+        self.geometry("1300x800")
+
+        # Tab view
+        self.tabs = ctk.CTkTabview(self)
+        self.tabs.pack(expand=True, fill="both")
+        self.create_job_setup_tab()
+        self.create_stage_dropper_tab()
+        self.create_perf_converter_tab()
+
+    # -- JSON Config Save/Load -------------------------------------------------
+    def save_config(self):
+        # 1) Determine where to save: prefer the current job path if set, 
+        #    otherwise use whatever is in the Destination entry.
+        destination = getattr(self, "current_job_path", None)
+        if not destination:
+            destination = self.destination_entry.get().strip()
+
+        if not destination:
+            self.status_label.configure(text="⚠️ Select destination first.")
+            return
+
+        # 2) Gather well names & stage counts
+        wells = []
+        for entry, count in self.well_entries:
+            name = entry.get().strip()
+            try:
+                stages = int(count.get().strip())
+            except ValueError:
+                stages = 0
+            if name and stages > 0:
+                wells.append({"name": name, "stages": stages})
+
+        # 3) Gather the checkbox options and file paths
+        opts = {
+            "include_frac_loader":      bool(self.frac_loader_checkbox.get()),
+            "master_frac_loader_path":  self.file_paths["Master Frac Loader"].get().strip(),
+            "include_redacted_ft":      bool(self.redacted_checkbox.get()),
+            "include_witsml":           bool(self.witsml_checkbox.get()),
+            "blank_master_packet_path": self.file_paths["Blank Master Packet"].get().strip()
+        }
+
+        # 4) Core fields
+        cust  = self.customer_entry.get().strip()
+        pad   = self.pad_entry.get().strip()
+        fleet = self.fleet_entry.get().strip()
+
+        # 5) Build the config dict to serialize
+        cfg = {
+            "destination": destination,
+            "fleet":       fleet,
+            "customer":    cust,
+            "pad":         pad,
+            "wells":       wells,
+            "options":     opts
+        }
+
+        # 6) Create a filesystem-safe filename
+        safe_cust = cust.replace(" ", "_")
+        safe_pad  = pad.replace(" ", "_")
+        filename  = f"{safe_cust}_{safe_pad}_job_config.json"
+        path      = os.path.join(destination, filename)
+
+        # 7) Write it out (and stash in memory)
+        try:
+            with open(path, "w") as f:
+                json.dump(cfg, f, indent=4)
+
+            # keep a copy around for the injector tab
+            self.config_data = cfg
+
+            # show forward-slashes in status for readability
+            display_path = path.replace("\\", "/")
+            self.status_label.configure(text=f"✅ Config saved to {display_path}")
+        except Exception as e:
+            self.status_label.configure(text=f"⚠️ Save error: {e}")
+
+    def load_config(self):
+        file = filedialog.askopenfilename(filetypes=[("JSON Files", "*.json")])
+        if file:
+            self.load_config_from_path(file)
+
+    def load_config_from_path(self, path):
+        try:
+            with open(path) as f:
+                cfg = json.load(f)
+        except Exception as e:
+            self.status_label.configure(text=f"⚠️ Load error: {e}")
+            return
+        # Populate UI fields
+        self.destination_entry.delete(0, 'end')
+        self.destination_entry.insert(0, cfg.get("destination", ""))
+        self.fleet_entry.delete(0, 'end')
+        self.fleet_entry.insert(0, cfg.get("fleet", ""))
+        self.customer_entry.delete(0, 'end')
+        self.customer_entry.insert(0, cfg.get("customer", ""))
+        self.pad_entry.delete(0, 'end')
+        self.pad_entry.insert(0, cfg.get("pad", ""))
+        wells = cfg.get("wells", [])
+        self.num_wells_entry.delete(0, 'end')
+        self.num_wells_entry.insert(0, str(len(wells)))
+        self.generate_well_name_fields()
+        for i, well in enumerate(wells):
+            if i < len(self.well_entries):
+                entry, count = self.well_entries[i]
+                entry.delete(0, 'end')
+                entry.insert(0, well.get("name", ""))
+                count.delete(0, 'end')
+                count.insert(0, str(well.get("stages", "")))
+        opts = cfg.get("options", {})
+        # Frac Loader
+        if opts.get("include_frac_loader"):
+            self.frac_loader_checkbox.select()
+        else:
+            self.frac_loader_checkbox.deselect()
+        self.toggle_frac_loader_picker()
+        self.file_paths["Master Frac Loader"].delete(0, 'end')
+        self.file_paths["Master Frac Loader"].insert(0, opts.get("master_frac_loader_path", ""))
+        # Redacted FT
+        if opts.get("include_redacted_ft"):
+            self.redacted_checkbox.select()
+        else:
+            self.redacted_checkbox.deselect()
+        # WITSML
+        if opts.get("include_witsml"):
+            self.witsml_checkbox.select()
+        else:
+            self.witsml_checkbox.deselect()
+        # Blank Packet
+        if opts.get("blank_master_packet_path"):
+            self.blank_packet_checkbox.select()
+        else:
+            self.blank_packet_checkbox.deselect()
+        self.toggle_blank_packet_picker()
+        self.file_paths["Blank Master Packet"].delete(0, 'end')
+        self.file_paths["Blank Master Packet"].insert(0, opts.get("blank_master_packet_path", ""))
+        self.status_label.configure(text=f"✅ Config loaded from {path}")
+        self.config_data = cfg
+
+        # Rebuild the Perf Tab after loading a config
+        if "Perf Converter" in self.tabs.tab_names():
+            self.tabs.remove("Perf Converter")
+        self.create_perf_converter_tab()
+
+
+
+    # -- Job Setup Tab ----------------------------------------------------------
+    def create_job_setup_tab(self):
+        tab = self.tabs.add("Job Setup")
+        # Destination
+        self.destination_entry = ctk.CTkEntry(tab, width=400, placeholder_text="Select Destination Folder for Job")
+        self.destination_entry.grid(row=0, column=0, padx=10, pady=10)
+        dest_button = ctk.CTkButton(tab, text="Browse Destination", command=self.browse_destination_folder)
+        dest_button.grid(row=0, column=1, padx=10, pady=10)
+        # Load/Save
+        load_button = ctk.CTkButton(tab, text="Load Config", command=self.load_config)
+        load_button.grid(row=0, column=2, padx=5, pady=10)
+        save_button = ctk.CTkButton(tab, text="Save Config", command=self.save_config)
+        save_button.grid(row=0, column=3, padx=5, pady=10)
+        # Fleet, Customer, Pad, # Wells
+        self.fleet_entry = ctk.CTkEntry(tab, width=150, placeholder_text="Fleet ID (e.g. NE07)")
+        self.fleet_entry.grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        self.customer_entry = ctk.CTkEntry(tab, width=300, placeholder_text="Customer Name")
+        self.customer_entry.grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        self.pad_entry = ctk.CTkEntry(tab, width=300, placeholder_text="Pad Name")
+        self.pad_entry.grid(row=3, column=0, padx=10, pady=5, sticky="w")
+        self.num_wells_entry = ctk.CTkEntry(tab, width=100, placeholder_text="# of Wells")
+        self.num_wells_entry.grid(row=4, column=0, padx=10, pady=5, sticky="w")
+
+        # Generate Well Fields Button
+        gen_fields_btn = ctk.CTkButton(tab, text="Generate Well Fields", command=self.generate_well_name_fields)
+        gen_fields_btn.grid(row=4, column=1, padx=10, pady=5)
+
+        # list that generate_well_name_fields will populate
+        self.well_entries = []
+
+        # Optional files
+        opt_frame = ctk.CTkFrame(tab)
+        opt_frame.grid(row=5, column=0, columnspan=2, padx=10, pady=10, sticky="nw")
+        self.frac_loader_checkbox = ctk.CTkCheckBox(opt_frame, text="Include Frac Loader", command=self.toggle_frac_loader_picker)
+        self.frac_loader_checkbox.grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        self.redacted_checkbox = ctk.CTkCheckBox(opt_frame, text="Include Redacted FT")
+        self.redacted_checkbox.grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        self.witsml_checkbox = ctk.CTkCheckBox(opt_frame, text="Include WITSML")
+        self.witsml_checkbox.grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        self.blank_packet_checkbox = ctk.CTkCheckBox(opt_frame, text="Blank Master Packet", command=self.toggle_blank_packet_picker)
+        self.blank_packet_checkbox.grid(row=3, column=0, sticky="w", padx=5, pady=2)
+        # Pickers
+        self.frac_loader_picker_frame = ctk.CTkFrame(tab)
+        self.frac_loader_picker_frame.grid(row=6, column=0, columnspan=2, padx=10, pady=5, sticky="w")
+        self.frac_loader_picker_frame.grid_remove()
+        self.blank_packet_picker_frame = ctk.CTkFrame(tab)
+        self.blank_packet_picker_frame.grid(row=7, column=0, columnspan=2, padx=10, pady=5, sticky="w")
+        self.blank_packet_picker_frame.grid_remove()
+        self.file_paths = {}
+        self.create_file_picker(self.frac_loader_picker_frame, "Master Frac Loader")
+        self.create_file_picker(self.blank_packet_picker_frame, "Blank Master Packet")
+        # Wells container
+        self.well_name_frame = ctk.CTkFrame(tab)
+        self.well_name_frame.grid(row=8, column=0, columnspan=2, padx=10, pady=10, sticky="nw")
+        # Status & generate
+        self.status_label = ctk.CTkLabel(tab, text="")
+        self.status_label.grid(row=99, column=0, columnspan=2, pady=10)
+        gen_btn = ctk.CTkButton(tab, text="Generate Job Folder Structure", command=self.generate_job_structure)
+        gen_btn.grid(row=100, column=0, columnspan=2, pady=30)
+
+    def toggle_frac_loader_picker(self):
+        if self.frac_loader_checkbox.get():
+            self.frac_loader_picker_frame.grid()
+        else:
+            self.frac_loader_picker_frame.grid_remove()
+
+    def toggle_blank_packet_picker(self):
+        if self.blank_packet_checkbox.get():
+            self.blank_packet_picker_frame.grid()
+        else:
+            self.blank_packet_picker_frame.grid_remove()
+
+    def create_file_picker(self, parent, label):
+        frame = ctk.CTkFrame(parent)
+        frame.pack(fill="x", padx=0, pady=2)
+        entry = ctk.CTkEntry(frame, width=400, placeholder_text=f"Select {label} File")
+        entry.pack(side="left", padx=5)
+        button = ctk.CTkButton(frame, text="Browse", command=lambda: self.browse_and_assign_file(label, entry))
+        button.pack(side="left")
+        self.file_paths[label] = entry
+
+    def browse_and_assign_file(self, label, entry_field):
+        filepath = filedialog.askopenfilename()
+        if filepath:
+            entry_field.delete(0, "end")
+            entry_field.insert(0, filepath)
+
+    def browse_destination_folder(self):
+        folder = filedialog.askdirectory()
+        if folder:
+            self.destination_entry.delete(0, "end")
+            self.destination_entry.insert(0, folder)
+            # auto-load config if present
+            for fname in os.listdir(folder):
+                if fname.endswith("_job_config.json"):
+                    self.load_config_from_path(os.path.join(folder, fname))
+                    break
+
+    def generate_well_name_fields(self):
+        for widget in self.well_name_frame.winfo_children():
+            widget.destroy()
+        self.well_entries.clear()
+        try:
+            num = int(self.num_wells_entry.get())
+            for i in range(num):
+                row = ctk.CTkFrame(self.well_name_frame)
+                row.pack(fill="x", pady=2)
+                name_ent = ctk.CTkEntry(row, width=200, placeholder_text=f"Well {i+1} Name")
+                name_ent.pack(side="left", padx=5)
+                cnt_ent = ctk.CTkEntry(row, width=100, placeholder_text="# of Stages")
+                cnt_ent.pack(side="left", padx=5)
+                self.well_entries.append((name_ent, cnt_ent))
+        except ValueError:
+            pass
+
+    def generate_job_structure(self):
+        base = self.destination_entry.get().strip()
+        fleet = self.fleet_entry.get().strip()
+        cust = self.customer_entry.get().strip()
+        pad = self.pad_entry.get().strip()
+        use_frac = bool(self.frac_loader_checkbox.get())
+        include_red = bool(self.redacted_checkbox.get())
+        include_wit = bool(self.witsml_checkbox.get())
+        use_blank = bool(self.blank_packet_checkbox.get())
+        master_loader = self.file_paths["Master Frac Loader"].get().strip() if use_frac else None
+        blank_pkt = self.file_paths["Blank Master Packet"].get().strip() if use_blank else None
+        folder_name = f"{cust} {pad}"
+        full_path = os.path.join(base, folder_name)
+        os.makedirs(full_path, exist_ok=True)
+        self.current_job_path = full_path
+        if use_frac and os.path.exists(master_loader):
+            ext = os.path.splitext(master_loader)[1]
+            out_name = f"{cust} {pad} Master Frac Loader{ext}"
+            shutil.copy(master_loader, os.path.join(full_path, out_name))
+        if use_blank and os.path.exists(blank_pkt):
+            ext = os.path.splitext(blank_pkt)[1]
+            out_name = f"{cust} {pad} Blank Master Packet{ext}"
+            shutil.copy(blank_pkt, os.path.join(full_path, out_name))
+        for entry, cnt in self.well_entries:
+            well = entry.get().strip()
+            try:
+                stages = int(cnt.get().strip())
+            except ValueError:
+                continue
+            well_path = os.path.join(full_path, well)
+            os.makedirs(well_path, exist_ok=True)
+            for s in range(1, stages + 1):
+                stage_str = f"Stage {s:02}"
+                spath = os.path.join(well_path, stage_str)
+                os.makedirs(spath, exist_ok=True)
+                if use_frac and os.path.exists(master_loader):
+                    loader_name = f"{well} {pad} Frac Loader {stage_str}.xlsm"
+                    shutil.copy(master_loader, os.path.join(spath, loader_name))
+                open(os.path.join(spath, f"{fleet}_{cust}_{pad}_{well}_CSV_{stage_str}.csv"), 'a').close()
+                open(os.path.join(spath, f"{fleet}_{cust}_{pad}_{well}_Post Job Report_{stage_str}.pdf"), 'a').close()
+                open(os.path.join(spath, f"{fleet}_{cust}_{pad}_{well}_SFT_{stage_str}.pdf"), 'a').close()
+                open(os.path.join(spath, "PJR.csv"), 'a').close()
+                open(os.path.join(spath, "PJR.rtf"), 'a').close()
+                if include_red:
+                    open(os.path.join(spath, f"{fleet}_{cust}_{pad}_{well}_Redacted FT_{stage_str}.pdf"), 'a').close()
+                if include_wit:
+                    open(os.path.join(spath, f"{fleet}_{cust}_{pad}_{well}_Job File_{stage_str}.xml"), 'a').close()
+        try:
+            subprocess.run(["explorer", os.path.realpath(full_path)])
+        except Exception:
+            pass
+        self.status_label.configure(text="✅ Successful File Folder Generation!")
+        self.save_config()
+        # Rebuild the Perf Tab after loading a config
+        if "Perf Converter" in self.tabs.tab_names():
+            self.tabs.remove("Perf Converter")
+        self.create_perf_converter_tab()
+
+    # -- File Injector Tab ------------------------------------------------------
+        # -- File Injector Tab ------------------------------------------------------
+    def create_stage_dropper_tab(self):
+        tab = self.tabs.add("File Injector")
+
+        # 1) File-type selector
+        self.file_type_var = ctk.StringVar(value="")
+        self.file_type_dropdown = ctk.CTkOptionMenu(
+            tab,
+            values=["Frac Loader", "Primary Stage Files", "Other File"],
+            variable=self.file_type_var,
+            command=self.toggle_file_type_inputs
+        )
+        self.file_type_dropdown.grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        self.file_type_dropdown.set("")
+
+        # 2) Container for the dynamic injector UI
+        self.injector_frame = ctk.CTkFrame(tab)
+        self.injector_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nw")
+
+    def clear_injector_frame(self):
+        for widget in self.injector_frame.winfo_children():
+            widget.destroy()
+
+    def toggle_file_type_inputs(self, value):
+        self.clear_injector_frame()
+
+        if value == "Frac Loader":
+            cfg = getattr(self, "config_data", {})
+            if not cfg:
+                return self.status_label.configure(text="⚠️ Load a config first!")
+
+            # file picker
+            ctk.CTkLabel(self.injector_frame, text="Select Frac Loader to inject:")\
+                .pack(anchor="w", pady=(0,5))
+            self.inject_frac_entry = ctk.CTkEntry(self.injector_frame, width=400)
+            self.inject_frac_entry.insert(0, cfg["options"].get("master_frac_loader_path",""))
+            self.inject_frac_entry.pack(side="left", pady=2)
+            ctk.CTkButton(
+                self.injector_frame, text="Browse",
+                command=lambda: self.browse_and_assign_file("inject_frac_loader", self.inject_frac_entry)
+            ).pack(side="left", padx=5)
+
+            # stage-range inputs
+            range_frame = ctk.CTkFrame(self.injector_frame)
+            range_frame.pack(fill="x", pady=(5,10))
+            ctk.CTkLabel(range_frame, text="Stage range:").pack(side="left", padx=(0,5))
+            self.start_stage_entry = ctk.CTkEntry(range_frame, width=50, placeholder_text="Start")
+            self.start_stage_entry.pack(side="left", padx=(0,5))
+            ctk.CTkLabel(range_frame, text="to").pack(side="left", padx=(0,5))
+            self.end_stage_entry = ctk.CTkEntry(range_frame, width=50, placeholder_text="End")
+            self.end_stage_entry.pack(side="left", padx=(0,5))
+
+            # well checkboxes
+            box = ctk.CTkFrame(self.injector_frame)
+            box.pack(fill="x", pady=10)
+            self.inject_well_vars = {}
+            ctk.CTkLabel(box, text="Select wells:").grid(row=0, column=0, sticky="w")
+            for i, wname in enumerate([w["name"] for w in cfg["wells"]], start=1):
+                var = ctk.BooleanVar(value=True)
+                chk = ctk.CTkCheckBox(box, text=wname, variable=var)
+                chk.grid(row=(i//5)+1, column=(i-1)%5, padx=5, pady=2, sticky="w")
+                self.inject_well_vars[wname] = var
+
+            # inject button
+            ctk.CTkButton(
+                self.injector_frame, text="Inject Frac Loader",
+                command=self.inject_frac_loader
+            ).pack(pady=(10,0))
+
+        else:
+            ctk.CTkLabel(
+                self.injector_frame,
+                text=f"⚙️ “{value}” injector coming soon."
+            ).pack()
+
+    def inject_frac_loader(self):
+        cfg = self.config_data
+        src = self.inject_frac_entry.get().strip()
+        if not os.path.isfile(src):
+            return self.status_label.configure(text="⚠️ Pick a valid Frac Loader file first.")
+
+        # parse stage range
+        try:
+            start = max(1, int(self.start_stage_entry.get().strip()))
+        except:
+            start = 1
+        try:
+            end = max(start, int(self.end_stage_entry.get().strip()))
+        except:
+            end = None
+
+        base      = cfg["destination"]
+        cust      = cfg["customer"]
+        pad       = cfg["pad"]
+        wells_cfg = {w["name"]: w["stages"] for w in cfg["wells"]}
+
+        for well, max_stage in wells_cfg.items():
+            if not self.inject_well_vars[well].get():
+                continue
+            real_end = end if end and end <= max_stage else max_stage
+
+            for s in range(start, real_end + 1):
+                stage_str = f"Stage {s:02}"
+                dst = os.path.join(base, f"{cust} {pad}", well, stage_str)
+                if os.path.isdir(dst):
+                    ext = os.path.splitext(src)[1]
+                    fname = f"{well} {pad} Frac Loader {stage_str}{ext}"
+                    shutil.copy(src, os.path.join(dst, fname))
+
+        self.status_label.configure(text="✅ Frac Loader injected!")
+
+
+    # -- Perf Converter Tab -----------------------------------------------------
+    def create_perf_converter_tab(self):
+        tab = self.tabs.add("Perf Converter")
+
+        # Instructions
+        instr = (
+            "Upload a Completion Procedure PDF. The tool will extract:\n\n"
+            " - Top/Bottom Perf Depths\n"
+            " - Plug Depths\n\n"
+            "Enter only Page Ranges and # Clusters/Stage for each well below,\n"
+            "then click “Proceed to Next Well’s Perf Data”."
+        )
+        ctk.CTkLabel(tab, text=instr, justify="left").grid(row=0, column=0, columnspan=4, padx=10, pady=10, sticky="w")
+
+        # Scrollable frame for well inputs
+        self.perf_well_data = []                # list of tuples (well_name, page_entry, cluster_entry)
+        self.perf_data      = {}                # store parsed results
+        self.current_well_index = 0
+
+        frame = ctk.CTkScrollableFrame(tab, width=1200, height=200)
+        frame.grid(row=1, column=0, columnspan=4, padx=10, pady=5, sticky="w")
+
+        # Build one row per well from config_data:
+        if not self.config_data.get("wells"):
+            ctk.CTkLabel(frame, text="⚠️ Load a job config first!").pack(pady=20)
+            return
+
+        for i, w in enumerate(self.config_data["wells"]):
+            well_name = w["name"]
+            pg = ctk.CTkEntry(frame, placeholder_text=f"{well_name}: Pg # e.g. 22-25")
+            cl = ctk.CTkEntry(frame, placeholder_text="# Clusters/Stage")
+            pg.grid(row=i, column=0, padx=5, pady=2, sticky="w")
+            cl.grid(row=i, column=1, padx=5, pady=2, sticky="w")
+            self.perf_well_data.append((well_name, pg, cl))
+
+        # Upload button
+        upload_btn = ctk.CTkButton(tab, text="Upload Completion Procedure PDF", command=self.upload_pdf)
+        upload_btn.grid(row=2, column=0, padx=10, pady=10, sticky="w")
+
+        # Result box + Next/Export button
+        self.next_button = ctk.CTkButton(tab, text="Proceed to Next Well’s Perf Data",
+                                        command=self.show_next_well, state="disabled")
+        self.next_button.grid(row=2, column=1, padx=10, pady=10, sticky="w")
+
+        scroll = ctk.CTkScrollableFrame(tab, width=925, height=400)
+        scroll.grid(row=3, column=0, columnspan=4, padx=10, pady=5, sticky="w")
+        self.result_box = ctk.CTkTextbox(scroll, wrap="none", width=900, height=380)
+        self.result_box.pack(padx=5, pady=5, fill="both", expand=True)
+
+
+
+    def upload_pdf(self):
+        pdf_path = filedialog.askopenfilename(filetypes=[("PDF Files","*.pdf")])
+        if not pdf_path:
+            return
+
+        # reset
+        self.perf_data.clear()
+        self.result_box.delete("1.0","end")
+        self.current_well_index = 0
+
+        well_map = {}
+        for well_name, pages_e, clusters_e in self.perf_well_data:
+            raw = pages_e.get().replace(" ", "")
+            pages = self.parse_pages(raw)
+        
+            try:
+                ncl = int(clusters_e.get())
+            except:
+                ncl = 0
+            well_map[well_name] = {"pages": sorted(pages), "n_clusters": ncl}
+
+        try:
+            with pdfplumber.open(pdf_path) as pdf:
+                for well, cfg in well_map.items():
+                    pages = cfg['pages']
+                    ncl   = cfg['n_clusters']
+                    stages = []
+
+                    for pnum in pages:
+                        page = pdf.pages[pnum-1]
+                        tables = page.extract_tables() or []
+
+                        # 1) find a valid table
+                        for tbl in tables:
+                            hdr = tbl[0]
+                            if not hdr:
+                                continue
+                            low = [ (h or "").lower() for h in hdr ]
+                            if 'stage' in " ".join(low) and 'plug' in " ".join(low):
+                                self.result_box.insert("end", f"🔎 Found candidate table on page {pnum}\n")
+                                try:
+                                    i_stage   = next(i for i,h in enumerate(low) if h.strip().startswith('stage'))
+                                    i_plug    = next(i for i,h in enumerate(low) if 'plug' in h)
+                                    cluster_is = [i for i,h in enumerate(low) if 'cluster' in h][:ncl]
+                                except StopIteration:
+                                    continue
+
+                                for row in tbl[1:]:
+                                    if not row or not row[i_stage]:
+                                        continue
+                                    stg_txt = row[i_stage].strip()
+                                    if not stg_txt.isdigit():
+                                        continue
+                                    stg = f"{int(stg_txt):02d}"
+
+                                    plug_txt = (row[i_plug] or "").replace(',','').strip()
+                                    if not re.fullmatch(r"\d+(?:\.\d+)?", plug_txt):
+                                        continue
+
+                                    cl_vals = []
+                                    for ci in cluster_is:
+                                        ctxt = (row[ci] or "").replace(',','').strip()
+                                        if re.fullmatch(r"\d+(?:\.\d+)?", ctxt):
+                                            cl_vals.append(float(ctxt))
+                                    if len(cl_vals) < ncl:
+                                        continue
+
+                                    plug = float(plug_txt)
+                                    top  = min(cl_vals)
+                                    bot  = max(cl_vals)
+                                    stages.append((stg, plug, top, bot))
+
+                                break  # stop after first matching table
+
+                    # 2) fallback: line‐based “Stage XX …”
+                    if len(stages) < (1 if ncl else 0):
+                        for pnum in pages:
+                            text = pdf.pages[pnum-1].extract_text() or ""
+                            for L in text.splitlines():
+                                m = re.match(r"Stage\s+(\d+)", L, re.IGNORECASE)
+                                if not m:
+                                    continue
+                                toks = re.findall(r"\d+(?:\.\d+)?", L.replace(',',''))
+                                if len(toks) >= 2 + ncl:
+                                    stg = f"{int(toks[0]):02d}"
+                                    plug = float(toks[1])
+                                    clv  = list(map(float, toks[2:2+ncl]))
+                                    top  = min(clv)
+                                    bot  = max(clv)
+                                    if not any(s[0]==stg for s in stages):
+                                        stages.append((stg, plug, top, bot))
+
+                    stages.sort(key=lambda x: int(x[0]))
+                    self.perf_data[well] = stages
+                    self.result_box.insert("end", f"\n=== {well}: Parsed {len(stages)} stages ===\n")
+                    for s in stages:
+                        self.result_box.insert("end", f"  Stage {s[0]}: plug={s[1]}, top={s[2]}, bot={s[3]}\n")
+
+                    if stages:
+                        self.next_button.configure(state="normal")
+
+        except Exception as e:
+            self.result_box.insert("end", f"❌ ERROR reading PDF: {e}\n")
+
+    def parse_pages(self, raw: str):
+        pages = set()
+        for part in raw.split(','):
+            if '-' in part:
+                a, b = part.split('-', 1)
+                try:
+                    a, b = int(a), int(b)
+                except:
+                    continue
+                pages.update(range(a, b+1))
+            else:
+                try:
+                    pages.add(int(part))
+                except:
+                    continue
+        return sorted(pages)
+
+    def show_next_well(self):
+        wells = list(self.perf_data)
+        if self.current_well_index < len(wells):
+            w = wells[self.current_well_index]
+            self.result_box.insert("end", f"\n>>> {w} <<<\n")
+            for stg, plug, top, bot in self.perf_data[w]:
+                self.result_box.insert("end", f"  {stg}: plug={plug}, top={top}, bot={bot}\n")
+            self.current_well_index += 1
+            if self.current_well_index >= len(wells):
+                self.next_button.configure(text="Export to Excel", command=self.export_excel)
+        else:
+            self.export_excel()
+
+    def export_excel(self):
+        default = "Perf_Converter_" + "-".join(self.perf_data.keys()) + ".xlsx"
+        path = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile=default, filetypes=[("Excel","*.xlsx")])
+        if not path:
+            return
+        wb = Workbook()
+        for well, stgs in self.perf_data.items():
+            ws = wb.create_sheet(title=well)
+            ws.append(["Stage","Plug Depth","Top Perf","Bottom Perf"])
+            for stg, plug, top, bot in stgs:
+                # write numbers as real Excel numbers
+                ws.append([stg, plug, top, bot])
+        if "Sheet" in wb.sheetnames:
+            del wb["Sheet"]
+        wb.save(path)
+        self.result_box.insert("end", f"\n✅ Saved Excel: {path}\n")
+
+
+if __name__ == "__main__":
+    app = FracMasterApp()
+    app.mainloop()
