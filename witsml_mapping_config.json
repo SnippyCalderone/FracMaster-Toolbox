@@ -1,0 +1,42 @@
+{
+  "Pumps Start": {
+    "sheet": "Engineer",
+    "cell": "C7"
+  },
+  "Pumps End": {
+    "sheet": "Engineer",
+    "cell": "C8"
+  },
+  "Pumps on NG Start": {
+    "sheet": "Engineer",
+    "cell": "D7"
+  },
+  "Pumps on NG End": {
+    "sheet": "Engineer",
+    "cell": "D8"
+  },
+  "Clean Total (bbls)": {
+    "sheet": "Engineer",
+    "cell": "C22"
+  },
+  "Produce Total (bbls)": {
+    "sheet": "Engineer",
+    "cell": "C23"
+  },
+  "Breakdown PSI": {
+    "sheet": "Engineer",
+    "cell": "C14"
+  },
+  "Frac Gradient": {
+    "sheet": "Uploader",
+    "cell": "F4"
+  },
+  "Diesel Usage": {
+    "sheet": "Engineer",
+    "cell": "C31"
+  },
+  "CNG Usage": {
+    "sheet": "Engineer",
+    "cell": "E28"
+  }
+}
