@@ -1,7 +1,12 @@
 import customtkinter as ctk
 import os
-import pdfplumber  # Replaces fitz for table extraction
+import csv
+import pdfplumber
 from tkinter import filedialog
+import re
+from collections import defaultdict
+import openpyxl
+from openpyxl import Workbook
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -13,6 +18,10 @@ class FracMasterApp(ctk.CTk):
         self.title("FracMaster Toolbox - Dev")
         self.geometry("1300x800")
 
+        self.customer_name = ""
+        self.pad_name = ""
+        self.stage1_expected_guns = 0
+
         self.tabs = ctk.CTkTabview(self)
         self.tabs.pack(expand=True, fill="both")
 
@@ -22,7 +31,23 @@ class FracMasterApp(ctk.CTk):
 
     def create_job_setup_tab(self):
         tab = self.tabs.add("Job Setup")
-        placeholder = ctk.CTkLabel(tab, text="[Job Setup Tool Placeholder]\n(To be reintegrated later)", font=("Arial", 16))
+
+        customer_label = ctk.CTkLabel(tab, text="Customer Name")
+        customer_label.pack(pady=(10, 0))
+        self.customer_entry = ctk.CTkEntry(tab)
+        self.customer_entry.pack(pady=(0, 10))
+
+        pad_label = ctk.CTkLabel(tab, text="Pad Name")
+        pad_label.pack(pady=(10, 0))
+        self.pad_entry = ctk.CTkEntry(tab)
+        self.pad_entry.pack(pady=(0, 10))
+
+        stage1_label = ctk.CTkLabel(tab, text="Expected Guns in Stage 1")
+        stage1_label.pack(pady=(10, 0))
+        self.stage1_entry = ctk.CTkEntry(tab)
+        self.stage1_entry.pack(pady=(0, 10))
+
+        placeholder = ctk.CTkLabel(tab, text="[Job Setup Tool Placeholder]\n(To be reintegrated later)", font=("Arial", 14))
         placeholder.pack(pady=20)
 
     def create_file_dropper_tab(self):
@@ -77,6 +102,13 @@ class FracMasterApp(ctk.CTk):
             pass
 
     def upload_pdf(self):
+        self.customer_name = self.customer_entry.get().strip() or "CustomerName"
+        self.pad_name = self.pad_entry.get().strip() or "PadName"
+        try:
+            self.stage1_expected_guns = int(self.stage1_entry.get().strip())
+        except ValueError:
+            self.stage1_expected_guns = 0
+
         pdf_path = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
         if not pdf_path:
             return
@@ -97,6 +129,7 @@ class FracMasterApp(ctk.CTk):
                     well_page_map[name] = page_set
 
             self.result_box.delete("1.0", "end")
+            perf_summary = defaultdict(list)
 
             with pdfplumber.open(pdf_path) as pdf:
                 for i, page in enumerate(pdf.pages):
@@ -105,14 +138,61 @@ class FracMasterApp(ctk.CTk):
                         if page_num in pages:
                             tables = page.extract_tables()
                             for table in tables:
-                                flat_headers = [cell.lower() for cell in table[0] if cell]
-                                if any(keyword in ' '.join(flat_headers) for keyword in ["gun", "cluster", "stage", "plug"]):
-                                    col_widths = [max(len(str(cell)) if cell else 0 for cell in col) for col in zip(*table)]
-                                    self.result_box.insert("end", f"--- {well_name} | Table Found on Page {page_num} ---\n")
-                                    for row in table:
-                                        row_str = " | ".join((cell.strip() if cell else "").ljust(col_widths[i]) for i, cell in enumerate(row))
-                                        self.result_box.insert("end", row_str + "\n")
-                                    self.result_box.insert("end", f"{'-'*80}\n")
+                                data_rows = [row for row in table if sum(1 for cell in row if cell and cell.strip()) >= 10]
+
+                                for row in data_rows:
+                                    if len(row) >= 16:
+                                        fallback_headers = ["Stage", "Plug Top"] + [f"Gun {i}" for i in range(1, 15)]
+                                        zipped_row = dict(zip(fallback_headers, row[:16]))
+
+                                        gun_depths = []
+                                        for key in fallback_headers[2:]:
+                                            raw = zipped_row.get(key, "")
+                                            if raw:
+                                                try:
+                                                    val = float(raw.replace(",", "").strip())
+                                                    gun_depths.append(val)
+                                                except ValueError:
+                                                    pass
+
+                                        plug_depth = None
+                                        plug_raw = zipped_row.get("Plug Top", "")
+                                        if plug_raw:
+                                            try:
+                                                plug_depth = float(plug_raw.replace(",", "").strip())
+                                            except ValueError:
+                                                pass
+
+                                        if gun_depths:
+                                            stage = zipped_row.get("Stage", "?")
+                                            if stage == "1" and len(gun_depths) < self.stage1_expected_guns:
+                                                self.result_box.insert("end", f"[NOTICE] Stage 1 skipped (expected >{len(gun_depths)} guns)\n")
+                                                continue
+                                            top = min(gun_depths)
+                                            bottom = max(gun_depths)
+                                            perf_summary[well_name].append((stage, plug_depth, top, bottom))
+                                            self.result_box.insert("end", f"Stage {stage} | Top: {top:.2f} | Bottom: {bottom:.2f} | Plug: {plug_depth if plug_depth is not None else 'N/A'}\n")
+
+            self.result_box.insert("end", "\n==== PERF SUMMARY ====\n")
+            for well, stages in perf_summary.items():
+                self.result_box.insert("end", f"{well}:\n")
+                for stage, plug, top, bot in stages:
+                    self.result_box.insert("end", f"  Stage {stage}: Plug = {plug if plug is not None else 'N/A'}, Top = {top:.2f}, Bottom = {bot:.2f}\n")
+                self.result_box.insert("end", "\n")
+
+            xlsx_path = os.path.join(os.path.dirname(pdf_path), f"{self.customer_name}_{self.pad_name}_PerfConverter.xlsx")
+            wb = Workbook()
+            default_sheet = wb.active
+            wb.remove(default_sheet)
+
+            for well, stages in perf_summary.items():
+                sheet = wb.create_sheet(title=well[:31])
+                sheet.append(["Stage #", "Plug Depth (ft)", "Top Perf (ft)", "Bottom Perf (ft)"])
+                for stage, plug, top, bot in stages:
+                    sheet.append([stage, plug if plug is not None else "N/A", f"{top:.2f}", f"{bot:.2f}"])
+
+            wb.save(xlsx_path)
+            self.result_box.insert("end", f"Excel exported to: {xlsx_path}\n")
 
         except Exception as e:
             self.result_box.delete("1.0", "end")
