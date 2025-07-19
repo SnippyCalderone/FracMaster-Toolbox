@@ -5,6 +5,7 @@ import json
 from tkinter import filedialog
 import re
 import subprocess
+import sys
 import pdfplumber
 from openpyxl import Workbook
 
@@ -25,6 +26,27 @@ class FracMasterApp(ctk.CTk):
         self.create_job_setup_tab()
         self.create_stage_dropper_tab()
         self.create_perf_converter_tab()
+
+    def refresh_tabs_for_config(self):
+        """Rebuild tabs that rely on loaded configuration."""
+        if "File Injector" in self.tabs.tab_names():
+            self.tabs.remove("File Injector")
+        if "Perf Converter" in self.tabs.tab_names():
+            self.tabs.remove("Perf Converter")
+        self.create_stage_dropper_tab()
+        self.create_perf_converter_tab()
+
+    # -- Helpers --------------------------------------------------------------
+    def _extract_number(self, cell):
+        """Return the first numeric value found in a table cell, or None."""
+        if not cell:
+            return None
+        m = re.search(r"\d+(?:\.\d+)?", str(cell).replace(',', ''))
+        return float(m.group()) if m else None
+
+    def _extract_numbers(self, text):
+        """Return list of numeric values from arbitrary text."""
+        return [float(n.replace(',', '')) for n in re.findall(r"\d+(?:\.\d+)?", text)]
 
     # -- JSON Config Save/Load -------------------------------------------------
     def save_config(self):
@@ -92,6 +114,9 @@ class FracMasterApp(ctk.CTk):
             self.status_label.configure(text=f"✅ Config saved to {display_path}")
         except Exception as e:
             self.status_label.configure(text=f"⚠️ Save error: {e}")
+        else:
+            # update other tabs with the new configuration
+            self.refresh_tabs_for_config()
 
     def load_config(self):
         file = filedialog.askopenfilename(filetypes=[("JSON Files", "*.json")])
@@ -155,10 +180,8 @@ class FracMasterApp(ctk.CTk):
         self.status_label.configure(text=f"✅ Config loaded from {path}")
         self.config_data = cfg
 
-        # Rebuild the Perf Tab after loading a config
-        if "Perf Converter" in self.tabs.tab_names():
-            self.tabs.remove("Perf Converter")
-        self.create_perf_converter_tab()
+        # Rebuild tabs that rely on this configuration
+        self.refresh_tabs_for_config()
 
 
 
@@ -325,15 +348,19 @@ class FracMasterApp(ctk.CTk):
                 if include_wit:
                     open(os.path.join(spath, f"{fleet}_{cust}_{pad}_{well}_Job File_{stage_str}.xml"), 'a').close()
         try:
-            subprocess.run(["explorer", os.path.realpath(full_path)])
+            real = os.path.realpath(full_path)
+            if sys.platform.startswith("win"):
+                os.startfile(real)
+            elif sys.platform.startswith("darwin"):
+                subprocess.run(["open", real])
+            else:
+                subprocess.run(["xdg-open", real])
         except Exception:
             pass
         self.status_label.configure(text="✅ Successful File Folder Generation!")
         self.save_config()
-        # Rebuild the Perf Tab after loading a config
-        if "Perf Converter" in self.tabs.tab_names():
-            self.tabs.remove("Perf Converter")
-        self.create_perf_converter_tab()
+        # refresh tabs now that config and folders are created
+        self.refresh_tabs_for_config()
 
     # -- File Injector Tab ------------------------------------------------------
         # -- File Injector Tab ------------------------------------------------------
@@ -531,77 +558,91 @@ class FracMasterApp(ctk.CTk):
                         page = pdf.pages[pnum-1]
                         tables = page.extract_tables() or []
 
-                        # 1) find a valid table
+                        # 1) scan tables for stage/plug info
                         for tbl in tables:
-                            hdr = tbl[0]
-                            if not hdr:
-                                continue
-                            low = [ (h or "").lower() for h in hdr ]
-                            if 'stage' in " ".join(low) and 'plug' in " ".join(low):
-                                self.result_box.insert("end", f"🔎 Found candidate table on page {pnum}\n")
-                                try:
-                                    i_stage   = next(i for i,h in enumerate(low) if h.strip().startswith('stage'))
-                                    i_plug    = next(i for i,h in enumerate(low) if 'plug' in h)
-                                    cluster_is = [i for i,h in enumerate(low) if 'cluster' in h][:ncl]
-                                except StopIteration:
+                            hdr = tbl[0] or []
+                            low = [ (h or '').lower() for h in hdr ]
+                            if 'stage' in ' '.join(low) and 'plug' in ' '.join(low):
+                                self.result_box.insert('end', f"🔎 Found candidate table on page {pnum}\n")
+
+                                def col(*words):
+                                    for i,h in enumerate(low):
+                                        if all(w in h for w in words):
+                                            return i
+                                    return None
+
+                                i_stage = col('stage')
+                                i_plug  = col('plug')
+                                if i_stage is None or i_plug is None:
                                     continue
+                                i_top = col('top','perf')
+                                i_bot = col('bottom','perf')
+                                cluster_is = [i for i,h in enumerate(low) if 'cluster' in h][:ncl]
 
                                 for row in tbl[1:]:
-                                    if not row or not row[i_stage]:
+                                    if not row:
                                         continue
-                                    stg_txt = row[i_stage].strip()
-                                    if not stg_txt.isdigit():
+                                    stg_txt = str(row[i_stage] or '')
+                                    m_stage = re.search(r"\d+", stg_txt)
+                                    if not m_stage:
                                         continue
-                                    stg = f"{int(stg_txt):02d}"
+                                    stg = f"{int(m_stage.group()):02d}"
 
-                                    plug_txt = (row[i_plug] or "").replace(',','').strip()
-                                    if not re.fullmatch(r"\d+(?:\.\d+)?", plug_txt):
-                                        continue
-
-                                    cl_vals = []
-                                    for ci in cluster_is:
-                                        ctxt = (row[ci] or "").replace(',','').strip()
-                                        if re.fullmatch(r"\d+(?:\.\d+)?", ctxt):
-                                            cl_vals.append(float(ctxt))
-                                    if len(cl_vals) < ncl:
+                                    plug = self._extract_number(row[i_plug])
+                                    if plug is None:
                                         continue
 
-                                    plug = float(plug_txt)
-                                    top  = min(cl_vals)
-                                    bot  = max(cl_vals)
+                                    cl_vals = [self._extract_number(row[ci]) for ci in cluster_is]
+                                    cl_vals = [v for v in cl_vals if v is not None]
+                                    if i_top is not None:
+                                        v = self._extract_number(row[i_top])
+                                        if v is not None:
+                                            cl_vals.append(v)
+                                    if i_bot is not None:
+                                        v = self._extract_number(row[i_bot])
+                                        if v is not None:
+                                            cl_vals.append(v)
+                                    cl_vals = [v for v in cl_vals if v is not None]
+                                    if not cl_vals:
+                                        continue
+
+                                    top = min(cl_vals)
+                                    bot = max(cl_vals)
                                     stages.append((stg, plug, top, bot))
+                                break
 
-                                break  # stop after first matching table
-
-                    # 2) fallback: line‐based “Stage XX …”
-                    if len(stages) < (1 if ncl else 0):
+                    # 2) fallback on plain text
+                    if not stages:
                         for pnum in pages:
-                            text = pdf.pages[pnum-1].extract_text() or ""
+                            text = pdf.pages[pnum-1].extract_text() or ''
                             for L in text.splitlines():
-                                m = re.match(r"Stage\s+(\d+)", L, re.IGNORECASE)
+                                m = re.search(r"Stage\s*(\d+)", L, re.IGNORECASE)
                                 if not m:
                                     continue
-                                toks = re.findall(r"\d+(?:\.\d+)?", L.replace(',',''))
-                                if len(toks) >= 2 + ncl:
-                                    stg = f"{int(toks[0]):02d}"
-                                    plug = float(toks[1])
-                                    clv  = list(map(float, toks[2:2+ncl]))
-                                    top  = min(clv)
-                                    bot  = max(clv)
-                                    if not any(s[0]==stg for s in stages):
-                                        stages.append((stg, plug, top, bot))
+                                nums = self._extract_numbers(L)
+                                if len(nums) < 3:
+                                    continue
+                                stg  = f"{int(m.group(1)):02d}"
+                                plug = nums[1]
+                                clv  = nums[2:2+ncl] if ncl else nums[2:4]
+                                if not clv:
+                                    continue
+                                top  = min(clv)
+                                bot  = max(clv)
+                                if not any(s[0] == stg for s in stages):
+                                    stages.append((stg, plug, top, bot))
 
                     stages.sort(key=lambda x: int(x[0]))
                     self.perf_data[well] = stages
-                    self.result_box.insert("end", f"\n=== {well}: Parsed {len(stages)} stages ===\n")
+                    self.result_box.insert('end', f"\n=== {well}: Parsed {len(stages)} stages ===\n")
                     for s in stages:
-                        self.result_box.insert("end", f"  Stage {s[0]}: plug={s[1]}, top={s[2]}, bot={s[3]}\n")
+                        self.result_box.insert('end', f"  Stage {s[0]}: plug={s[1]}, top={s[2]}, bot={s[3]}\n")
 
                     if stages:
-                        self.next_button.configure(state="normal")
+                        self.next_button.configure(state='normal')
 
         except Exception as e:
-            self.result_box.insert("end", f"❌ ERROR reading PDF: {e}\n")
+            self.result_box.insert('end', f"❌ ERROR reading PDF: {e}\n")
 
     def parse_pages(self, raw: str):
         pages = set()
