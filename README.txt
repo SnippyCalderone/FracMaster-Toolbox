@@ -117,7 +117,7 @@ FracMaster Toolbox streamlines frac-job setup, file injection, and perforation-d
    * **Include Frac Loader** → browse to your `.xlsm` master loader.
    * **Include Redacted FT** → (tools will create blank PDFs).
    * **Include WITSML** → blank `.xml` if needed.
-   * **Blank Master Packet** → browse to a master packet template.
+   * **Blank Master Packet** → browse to a master packet template (.xlsm).
 5. **Save Config**
 
    * Click **Save Config** → writes `SunriseEnergy_SunrisePad_job_config.json` into the job folder.
@@ -139,7 +139,7 @@ FracMaster Toolbox streamlines frac-job setup, file injection, and perforation-d
 > # of Wells: 2
 > Wells: 001H (20), 002H (18)
 > Include Frac Loader: ✔  → browse to C:/Templates/FracLoader.xlsm
-> Blank Master Packet: ✔  → browse to C:/Templates/Packet.docx
+> Blank Master Packet: ✔  → browse to C:/Templates/Packet.xlsm
 > ```
 
 ---
@@ -234,10 +234,13 @@ FracMaster Toolbox streamlines frac-job setup, file injection, and perforation-d
 ## ✨ Future Enhancements
 
 * **WF Generator** (Perf Converter)
-  Add a “WF Generator” button that, based on your parsed perf data and cluster counts, will auto-generate a Petrix Stage File (`.wf`), ready for hydraulic modeling and fracture design.
+  Add a “WF Generator” button that, based on your parsed perf data and cluster counts, will auto-generate a Petrix Stage File (`.xlsx`), ready to be added to Petrix Stage library for field usage.
 
 * **FT Calculator**
   Upload a Proposal PDF to automatically extract and calculate Frac Tool pricing: costs, discounts, HHP brackets, mileage brackets, etc., then export a detailed cost summary.
+
+* **Job History**
+	Maintain & use job history data table containing previous stage data values in the event of restoring corrupted/lost files.
 
 * **Packet Assist**
   Use your Blank Master Packet `.xlsm` as a target for both WITSML (`.xml`) and manual inputs. In the Config Mapper you’ll define the destination cell addresses once (saved in a per-job `config_mapper.json`), so Packet Assist can:
@@ -245,7 +248,7 @@ FracMaster Toolbox streamlines frac-job setup, file injection, and perforation-d
   1. Inject WITSML outputs without corrupting VBA macros or formulas
   2. Overwrite only the named cells for each stage
   3. Remember your mappings across jobs
-  4. Eventually tie into the FracPro OPS API for fully automated data uploads and maintain a local history of past stage data.
+  4. Eventually be used to set the base as an assisting AI Agent to send/receive data between FracPro OPS API.
 
 * **Primary Stage Files Injection**
   Extend the File Injector tab to handle PJR, SFT, Redacted FT, CSV, XML, and any other “per-stage” files in bulk—select file type, wells, stage range, and drop them into the right folders in one click.
@@ -253,8 +256,8 @@ FracMaster Toolbox streamlines frac-job setup, file injection, and perforation-d
 * **FracPro / FracOps API Integration**
   Build a direct link to your fracturing software’s back-end API to pull job metadata, push packets, or sync historical data automatically.
 
-* **Dark/Light Theme Toggle**
-  Leverage CustomTkinter’s built-in themes so you can switch between dark and light modes on the fly.
+* **FracMaster Mobile App**
+  Built for Field Personnel & FTA everyday usage. Easy accessibility to stage submission forms including: proppant run orders, chemical straps, post-stage info, proppant/chemical inventory, delivery updates, or direct message support with FTA.
 
 * **Batch Perf Conversion**
   Allow processing of multiple Completion Procedure PDFs at once—ideal for pads with 10+ wells—queuing them through the Perf Converter and exporting a combined Excel report.
