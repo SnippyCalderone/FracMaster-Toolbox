@@ -5,6 +5,7 @@ import json
 from tkinter import filedialog
 import re
 import subprocess
+import sys
 import pdfplumber
 from openpyxl import Workbook
 
@@ -325,7 +326,13 @@ class FracMasterApp(ctk.CTk):
                 if include_wit:
                     open(os.path.join(spath, f"{fleet}_{cust}_{pad}_{well}_Job File_{stage_str}.xml"), 'a').close()
         try:
-            subprocess.run(["explorer", os.path.realpath(full_path)])
+            real = os.path.realpath(full_path)
+            if sys.platform.startswith("win"):
+                os.startfile(real)
+            elif sys.platform.startswith("darwin"):
+                subprocess.run(["open", real])
+            else:
+                subprocess.run(["xdg-open", real])
         except Exception:
             pass
         self.status_label.configure(text="✅ Successful File Folder Generation!")
