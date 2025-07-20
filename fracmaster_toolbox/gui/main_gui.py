@@ -6,8 +6,7 @@ from tkinter import filedialog
 import re
 import subprocess
 import sys
-import pdfplumber
-from openpyxl import Workbook
+from fracmaster_toolbox.utils import perf_parser, file_utils
 
 # Dark mode and theme
 ctk.set_appearance_mode("dark")
@@ -548,99 +547,13 @@ class FracMasterApp(ctk.CTk):
             well_map[well_name] = {"pages": sorted(pages), "n_clusters": ncl}
 
         try:
-            with pdfplumber.open(pdf_path) as pdf:
-                for well, cfg in well_map.items():
-                    pages = cfg['pages']
-                    ncl   = cfg['n_clusters']
-                    stages = []
-
-                    for pnum in pages:
-                        page = pdf.pages[pnum-1]
-                        tables = page.extract_tables() or []
-
-                        # 1) scan tables for stage/plug info
-                        for tbl in tables:
-                            hdr = tbl[0] or []
-                            low = [ (h or '').lower() for h in hdr ]
-                            if 'stage' in ' '.join(low) and 'plug' in ' '.join(low):
-                                self.result_box.insert('end', f"🔎 Found candidate table on page {pnum}\n")
-
-                                def col(*words):
-                                    for i,h in enumerate(low):
-                                        if all(w in h for w in words):
-                                            return i
-                                    return None
-
-                                i_stage = col('stage')
-                                i_plug  = col('plug')
-                                if i_stage is None or i_plug is None:
-                                    continue
-                                i_top = col('top','perf')
-                                i_bot = col('bottom','perf')
-                                cluster_is = [i for i,h in enumerate(low) if 'cluster' in h][:ncl]
-
-                                for row in tbl[1:]:
-                                    if not row:
-                                        continue
-                                    stg_txt = str(row[i_stage] or '')
-                                    m_stage = re.search(r"\d+", stg_txt)
-                                    if not m_stage:
-                                        continue
-                                    stg = f"{int(m_stage.group()):02d}"
-
-                                    plug = self._extract_number(row[i_plug])
-                                    if plug is None:
-                                        continue
-
-                                    cl_vals = [self._extract_number(row[ci]) for ci in cluster_is]
-                                    cl_vals = [v for v in cl_vals if v is not None]
-                                    if i_top is not None:
-                                        v = self._extract_number(row[i_top])
-                                        if v is not None:
-                                            cl_vals.append(v)
-                                    if i_bot is not None:
-                                        v = self._extract_number(row[i_bot])
-                                        if v is not None:
-                                            cl_vals.append(v)
-                                    cl_vals = [v for v in cl_vals if v is not None]
-                                    if not cl_vals:
-                                        continue
-
-                                    top = min(cl_vals)
-                                    bot = max(cl_vals)
-                                    stages.append((stg, plug, top, bot))
-                                break
-
-                    # 2) fallback on plain text
-                    if not stages:
-                        for pnum in pages:
-                            text = pdf.pages[pnum-1].extract_text() or ''
-                            for L in text.splitlines():
-                                m = re.search(r"Stage\s*(\d+)", L, re.IGNORECASE)
-                                if not m:
-                                    continue
-                                nums = self._extract_numbers(L)
-                                if len(nums) < 3:
-                                    continue
-                                stg  = f"{int(m.group(1)):02d}"
-                                plug = nums[1]
-                                clv  = nums[2:2+ncl] if ncl else nums[2:4]
-                                if not clv:
-                                    continue
-                                top  = min(clv)
-                                bot  = max(clv)
-                                if not any(s[0] == stg for s in stages):
-                                    stages.append((stg, plug, top, bot))
-
-                    stages.sort(key=lambda x: int(x[0]))
-                    self.perf_data[well] = stages
-                    self.result_box.insert('end', f"\n=== {well}: Parsed {len(stages)} stages ===\n")
-                    for s in stages:
-                        self.result_box.insert('end', f"  Stage {s[0]}: plug={s[1]}, top={s[2]}, bot={s[3]}\n")
-
-                    if stages:
-                        self.next_button.configure(state='normal')
-
+            self.perf_data = perf_parser.parse_pdf(pdf_path, well_map)
+            for well, stages in self.perf_data.items():
+                self.result_box.insert('end', f"\n=== {well}: Parsed {len(stages)} stages ===\n")
+                for s in stages:
+                    self.result_box.insert('end', f"  Stage {s[0]}: plug={s[1]}, top={s[2]}, bot={s[3]}\n")
+            if self.perf_data:
+                self.next_button.configure(state='normal')
         except Exception as e:
             self.result_box.insert('end', f"❌ ERROR reading PDF: {e}\n")
 
@@ -679,19 +592,14 @@ class FracMasterApp(ctk.CTk):
         path = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile=default, filetypes=[("Excel","*.xlsx")])
         if not path:
             return
-        wb = Workbook()
-        for well, stgs in self.perf_data.items():
-            ws = wb.create_sheet(title=well)
-            ws.append(["Stage","Plug Depth","Top Perf","Bottom Perf"])
-            for stg, plug, top, bot in stgs:
-                # write numbers as real Excel numbers
-                ws.append([stg, plug, top, bot])
-        if "Sheet" in wb.sheetnames:
-            del wb["Sheet"]
-        wb.save(path)
+        file_utils.save_perf_excel(self.perf_data, path)
         self.result_box.insert("end", f"\n✅ Saved Excel: {path}\n")
 
 
-if __name__ == "__main__":
+def main():
     app = FracMasterApp()
     app.mainloop()
+
+
+if __name__ == "__main__":
+    main()

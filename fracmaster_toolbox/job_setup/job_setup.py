@@ -174,6 +174,10 @@ class FracMasterApp(ctk.CTk):
     def copy_file_to_stages(self):
         pass
 
-if __name__ == "__main__":
+def main():
     app = FracMasterApp()
     app.mainloop()
+
+
+if __name__ == "__main__":
+    main()
