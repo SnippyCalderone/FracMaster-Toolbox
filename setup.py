@@ -13,7 +13,7 @@ setup(
     ],
     entry_points={
         'console_scripts': [
-            'fracmaster=fracmaster_toolbox.ui.main_gui:main'
+            'fracmaster=fracmaster_toolbox.gui.main_gui:main'
         ]
     },
     author='Zach Calderone',
