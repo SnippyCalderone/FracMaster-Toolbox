@@ -11,3 +11,6 @@ __pycache__/
 
 # VS Code settings (optional)
 .vscode/
+
+# Add this to your .gitignore
+*.egg-info/
