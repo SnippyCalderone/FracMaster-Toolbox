@@ -12,9 +12,8 @@ __pycache__/
 # VS Code settings (optional)
 .vscode/
 
-<<<<<<< HEAD
 # Add this to your .gitignore
 *.egg-info/
-=======
-*.egg-info/
->>>>>>> 6a6a158 (Ignore .egg-info directory created by pip install -e)
+
+# .gitignore
+.env
