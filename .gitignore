@@ -15,4 +15,5 @@ __pycache__/
 # Add this to your .gitignore
 *.egg-info/
 
+# .gitignore
 .env
