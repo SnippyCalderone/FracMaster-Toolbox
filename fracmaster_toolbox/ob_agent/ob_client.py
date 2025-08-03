@@ -6,19 +6,24 @@ import logging
 import os
 from pathlib import Path
 from typing import Dict
+from datetime import datetime
 
 from dotenv import load_dotenv
 from openai import OpenAI
 
 from .ob_prompts import DEFAULT_ROLE, ROLE_PROMPTS
 
-# Configure logging
-LOG_FILE = Path(__file__).resolve().parents[2] / "logs" / "ob_agent.log"
-LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+# Configure logging with daily file naming
+LOG_DIR = Path(__file__).resolve().parents[2] / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+# Create a log file with today's date
+log_filename = LOG_DIR / f"ob_agent_{datetime.now().strftime('%Y-%m-%d')}.log"
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler()],
+    handlers=[logging.FileHandler(log_filename), logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
 
@@ -52,6 +57,6 @@ class OB:
                 {"role": "user", "content": prompt},
             ],
         )
-        content = response.choices[0].message["content"]
+        content = response.choices[0].message.content
         logger.info("Response: %s", content)
         return content
