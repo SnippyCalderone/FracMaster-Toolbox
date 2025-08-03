@@ -17,3 +17,6 @@ __pycache__/
 
 # .gitignore
 .env
+
+# Logs
+logs/

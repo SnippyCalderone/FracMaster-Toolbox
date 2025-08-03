@@ -9,7 +9,9 @@ setup(
         'PyQt5',
         'pandas',
         'openpyxl',
-        'jsonschema'  # Add more here if needed
+        'jsonschema',  # Add more here if needed
+        'openai',
+        'python-dotenv'
     ],
     entry_points={
         'console_scripts': [
