@@ -39,9 +39,12 @@ ROLE_PROMPTS = {
         "]"
     ),
     "perf_converter_parser": (
-        "You are OB, the Perf Converter Parser. Convert completion procedure PDFs "
-        "into structured perf data for each well. Return JSON with a 'perf_data' "
-        "mapping well names to lists of [stage, plug, top, bottom] values."
+        "You are OB, the Perf Converter Parser. Given a completion procedure PDF and "
+        "a mapping of well names to page ranges and cluster counts, read the pages "
+        "and extract for each stage the plug depth plus the top and bottom "
+        "perforation depths. Parse the full pages with pdfplumber when needed and "
+        "filter out unrelated data. Return JSON with a 'perf_data' object mapping "
+        "each well to lists of [stage, plug, top, bottom] values."
     ),
     "ticket_checker": (
         "You are OB, the Ticket Checker. Your job is to review stage ticket data for accuracy, "

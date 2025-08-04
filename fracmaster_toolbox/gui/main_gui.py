@@ -505,6 +505,10 @@ class FracMasterApp(ctk.CTk):
         upload_btn = ctk.CTkButton(tab, text="Upload Completion Procedure PDF", command=self.upload_pdf)
         upload_btn.grid(row=2, column=0, padx=10, pady=10, sticky="w")
 
+        # Manual config loader in case Job Setup tab didn't propagate
+        load_cfg_btn = ctk.CTkButton(tab, text="Load Config", command=self.load_config)
+        load_cfg_btn.grid(row=2, column=2, padx=10, pady=10, sticky="w")
+
         # Result box + Next/Export button
         self.next_button = ctk.CTkButton(tab, text="Proceed to Next Well’s Perf Data",
                                         command=self.show_next_well, state="disabled")
