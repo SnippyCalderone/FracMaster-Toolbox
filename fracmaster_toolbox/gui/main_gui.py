@@ -99,7 +99,8 @@ class FracMasterApp(ctk.CTk):
             with open(path, "w") as f:
                 json.dump(cfg, f, indent=4)
             self.config_data = cfg
-            self.status_label.configure(text=f"✅ Config saved to {path.replace('\\', '/')}")
+            normalized = path.replace("\\", "/")
+            self.status_label.configure(text=f"✅ Config saved to {normalized}")
         except Exception as e:
             self.status_label.configure(text=f"⚠️ Save error: {e}")
         else:
@@ -463,7 +464,9 @@ class FracMasterApp(ctk.CTk):
     
     
     def create_perf_converter_tab(self):
-        tab = self.tabs.add("Perf Converter")
+        # Keep a handle to the tab so later methods can reference it directly
+        self.perf_tab = self.tabs.add("Perf Converter")
+        tab = self.perf_tab
 
         # Instructions
         instr = (
@@ -480,6 +483,7 @@ class FracMasterApp(ctk.CTk):
         self.perf_data = {}
         self.parsed_well_names = []
         self.current_well_index = 0
+        self.next_well_btn = None
 
         self.perf_rows_frame = ctk.CTkScrollableFrame(tab, width=1200, height=200)
         self.perf_rows_frame.grid(row=1, column=0, columnspan=4, padx=10, pady=5, sticky="w")
@@ -504,12 +508,16 @@ class FracMasterApp(ctk.CTk):
         self.raw_preview_box.pack(padx=5, pady=5, fill="both", expand=True)
 
         self._render_perf_results()
-
     def upload_pdf(self):
         from tkinter import filedialog
         import json
         from fracmaster_toolbox.ob_agent import call_ob_agent
         from fracmaster_toolbox.utils import perf_parser
+
+        if not self.config_data.get("wells"):
+            self.result_box.delete("1.0", "end")
+            self.result_box.insert("end", "⚠️ Load a job_config.json first.")
+            return
 
         file_path = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
         if not file_path:
@@ -519,48 +527,56 @@ class FracMasterApp(ctk.CTk):
         self.parsed_well_names = []
         self.current_well_index = 0
 
-        well_map = {}
+        well_map: dict[str, dict[str, int]] = {}
         for name, entry_start, entry_end, entry_clust in self.perf_well_data:
             try:
                 start_page = int(entry_start.get())
                 end_page = int(entry_end.get())
                 clusters = int(entry_clust.get())
-            except:
+            except Exception:
                 start_page = end_page = clusters = 0
             well_map[name] = {"start_page": start_page, "end_page": end_page, "n_clusters": clusters}
 
-        pdf_text_by_well = perf_parser.extract_text_by_well(file_path, well_map)
+        try:
+            pdf_text_by_well = perf_parser.extract_text_by_well(file_path, well_map)
+        except Exception as e:
+            self.result_box.delete("1.0", "end")
+            self.result_box.insert("end", f"⚠️ Failed to read PDF: {e}")
+            return
 
         self.raw_preview_box.delete("1.0", "end")
         for well, text in pdf_text_by_well.items():
-            self.raw_preview_box.insert("end", f"\n==== {well} PDF Text ====\n{text}\n")
+            self.raw_preview_box.insert("end", f"\\n==== {well} PDF Text ====\\n{text}\\n")
 
         payload = {
             "pdf_text": pdf_text_by_well,
             "job_config": self.config_data,
             "well_map": well_map,
-            "instructions": "Extract plug, top, and bottom perf for each stage per well."
+            "instructions": "Extract plug, top, and bottom perf for each stage per well.",
         }
 
-        try:
-            result = call_ob_agent("perf_parser", payload)
-            if isinstance(result, str):
-                try:
-                    result = json.loads(result)
-                except json.JSONDecodeError:
-                    result = {}
+        result = call_ob_agent("perf_parser", payload)
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except json.JSONDecodeError:
+                result = {"error": "Invalid JSON from OB"}
 
-            self.perf_data = result.get("perf_data", {})
-            self.parsed_well_names = list(self.perf_data.keys())
-
-            if self.parsed_well_names:
-                self._display_well_data(self.parsed_well_names[0])
-                self._add_next_well_button()
-
-        except Exception as e:
+        if "error" in result:
             self.result_box.delete("1.0", "end")
-            self.result_box.insert("end", f"⚠️ Error: {e}")
+            self.result_box.insert("end", f"⚠️ {result['error']}")
+            return
 
+        self.perf_data = result.get("perf_data", {})
+        # Maintain original well order
+        self.parsed_well_names = [w for w in well_map if w in self.perf_data]
+
+        if self.parsed_well_names:
+            self._display_well_data(self.parsed_well_names[0])
+            self._add_next_well_button()
+        else:
+            self.result_box.delete("1.0", "end")
+            self.result_box.insert("end", "⚠️ No perf data returned")
     def _render_perf_results(self):
         self.result_box.delete("1.0", "end")
         for well, stages in self.perf_data.items():
@@ -576,7 +592,12 @@ class FracMasterApp(ctk.CTk):
             widget.destroy()
 
         self.perf_well_data.clear()
-        for i, well in enumerate(self.config_data.get("wells", [])):
+
+        headers = ["Start", "End", "Clusters"]
+        for col, text in enumerate(headers, start=1):
+            ctk.CTkLabel(self.perf_rows_frame, text=text).grid(row=0, column=col, padx=5)
+
+        for i, well in enumerate(self.config_data.get("wells", []), start=1):
             name = well["name"]
             ctk.CTkLabel(self.perf_rows_frame, text=f"{name}:").grid(row=i, column=0, padx=5, pady=2)
             entry_start = ctk.CTkEntry(self.perf_rows_frame, width=40)
@@ -597,11 +618,11 @@ class FracMasterApp(ctk.CTk):
             self.result_box.insert("end", f"Stage {stg}: plug={plug}, top={top}, bot={bot}\n")
 
     def _add_next_well_button(self):
-        if hasattr(self, "next_well_btn"):
+        if self.next_well_btn:
             self.next_well_btn.destroy()
 
         self.next_well_btn = ctk.CTkButton(
-            self.tabs.get_tab("Perf Converter"),
+            self.perf_tab,
             text="Proceed to Next Well",
             command=self.show_next_well
         )
@@ -610,11 +631,11 @@ class FracMasterApp(ctk.CTk):
     def show_next_well(self):
         self.current_well_index += 1
         if self.current_well_index >= len(self.parsed_well_names):
-            self.next_well_btn.configure(state="disabled")
+            if self.next_well_btn:
+                self.next_well_btn.configure(state="disabled")
             return
 
         next_well = self.parsed_well_names[self.current_well_index]
-        print("[DEBUG] Displaying data for well:", next_well)
         self._display_well_data(next_well)
 
 
