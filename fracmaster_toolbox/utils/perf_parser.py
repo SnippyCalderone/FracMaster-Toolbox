@@ -1,107 +1,42 @@
-"""Utilities for parsing completion procedure PDFs."""
-
 import pdfplumber
-import re
-from typing import Dict, List, Tuple
+import logging
 
-# A single stage record: (stage, plug, top, bottom)
-StageData = List[Tuple[str, float, float, float]]
+# Configure logging (standard library, no need to add to requirements.txt)
+logging.basicConfig(level=logging.INFO, format='[PerfParser] %(message)s')
 
-def parse_pdf(pdf_path: str, well_map: Dict[str, dict]) -> Dict[str, StageData]:
-    """Parse a completion procedure PDF into perf data.
-
-    Parameters
-    ----------
-    pdf_path:
-        Path to the completion procedure PDF file.
-    well_map:
-        Mapping of well names to configuration dictionaries. Each config must
-        contain:
-
-        ``start_page`` (int)
-            First 1-based page number in the PDF to scan for this well.
-        ``end_page`` (int)
-            Last 1-based page number in the PDF to scan for this well.
-        ``n_clusters`` (int)
-            Number of cluster depth columns per stage in the tables.
-
-    Returns
-    -------
-    Dict[str, StageData]
-        Mapping of well name to a list of tuples ``(stage, plug, top, bottom)``
-        where all numeric values are floats and ``stage`` is zero-padded.
+def parse_pdf(pdf_path, well_map):
     """
+    Extract raw text from PDF pages for each well.
+    Returns a dictionary where each key is a well name and value is the combined text from its page range.
+    This function replaces the old behavior of returning structured perf_data, as OB will now handle parsing.
+    """
+    return _extract_text(pdf_path, well_map)
 
-    perf_data: Dict[str, StageData] = {}
+def extract_text_by_well(pdf_path, well_map):
+    """
+    Wrapper for extracting raw text for OB or other consumers.
+    This aligns with OB integration and no longer parses stage/plug data locally.
+    """
+    return _extract_text(pdf_path, well_map)
 
-    with pdfplumber.open(pdf_path) as pdf:
-        for well, cfg in well_map.items():
-            start = int(cfg.get("start_page", 0) or 0)
-            end = int(cfg.get("end_page", 0) or 0)
-            ncl = int(cfg.get("n_clusters", 0) or 0)
-            pages = range(start, end + 1) if start and end and end >= start else []
-
-            stages: StageData = []
-
-            for pnum in pages:
-                if pnum - 1 >= len(pdf.pages):
-                    continue
-                page = pdf.pages[pnum - 1]
-                tables = page.extract_tables() or []
-                for tbl in tables:
-                    hdr = tbl[0] or []
-                    low = [(h or "").lower() for h in hdr]
-                    if "stage" in " ".join(low) and "plug" in " ".join(low):
-                        try:
-                            i_stage = next(i for i, h in enumerate(low) if "stage" in h)
-                            i_plug = next(i for i, h in enumerate(low) if "plug" in h)
-                        except StopIteration:
-                            continue
-                        cluster_is = [i for i, h in enumerate(low) if "cluster" in h][:ncl]
-                        for row in tbl[1:]:
-                            if not row or not row[i_stage]:
-                                continue
-                            stg_txt = str(row[i_stage]).strip()
-                            if not stg_txt.isdigit():
-                                continue
-                            plug_txt = str(row[i_plug]).replace(",", "").strip()
-                            if not re.fullmatch(r"\d+(?:\.\d+)?", plug_txt):
-                                continue
-                            cl_vals = []
-                            for ci in cluster_is:
-                                ctxt = str(row[ci]).replace(",", "").strip()
-                                if re.fullmatch(r"\d+(?:\.\d+)?", ctxt):
-                                    cl_vals.append(float(ctxt))
-                            if len(cl_vals) < ncl:
-                                continue
-                            plug = float(plug_txt)
-                            top = min(cl_vals)
-                            bot = max(cl_vals)
-                            stages.append((f"{int(stg_txt):02d}", plug, top, bot))
-                        break
-
-            if not stages:
-                for pnum in pages:
-                    if pnum - 1 >= len(pdf.pages):
-                        continue
-                    text = pdf.pages[pnum - 1].extract_text() or ""
-                    for line in text.splitlines():
-                        m = re.search(r"Stage\s+(\d+)", line, re.IGNORECASE)
-                        if not m:
-                            continue
-                        nums = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", line.replace(",", ""))]
-                        if len(nums) >= 2 + ncl:
-                            stg = f"{int(m.group(1)):02d}"
-                            plug = nums[1]
-                            clv = nums[2:2+ncl] if ncl else nums[2:4]
-                            if not clv:
-                                continue
-                            top = min(clv)
-                            bot = max(clv)
-                            if not any(s[0] == stg for s in stages):
-                                stages.append((stg, plug, top, bot))
-
-            stages.sort(key=lambda x: int(x[0]))
-            perf_data[well] = stages
-
-    return perf_data
+def _extract_text(pdf_path, well_map):
+    text_data = {}
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for well, info in well_map.items():
+                start, end = info.get("start_page", 0), info.get("end_page", 0)
+                extracted_text = []
+                for page_num in range(start - 1, end):
+                    if 0 <= page_num < len(pdf.pages):
+                        page = pdf.pages[page_num]
+                        text = page.extract_text() or "[No text found]"
+                        if text == "[No text found]":
+                            logging.warning(f"No text extracted from page {page_num+1} for well {well}")
+                        extracted_text.append(text)
+                    else:
+                        logging.warning(f"Page {page_num+1} out of range for well {well}")
+                text_data[well] = "\n".join(extracted_text)
+    except Exception as e:
+        logging.error(f"Failed to read PDF: {e}")
+        return {well: "" for well in well_map}
+    return text_data

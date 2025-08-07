@@ -7,8 +7,8 @@ import re
 import subprocess
 import sys
 from fracmaster_toolbox.utils import perf_parser, file_utils
+from fracmaster_toolbox.ob_agent import call_ob_agent
 
-# Dark mode and theme
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
@@ -19,47 +19,46 @@ class FracMasterApp(ctk.CTk):
         self.title("FracMaster Toolbox - v1.4")
         self.geometry("1300x800")
 
-        # Tab view
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
         self.tabs = ctk.CTkTabview(self)
-        self.tabs.pack(expand=True, fill="both")
+        self.tabs.grid(row=0, column=0, sticky="nsew")
         self.create_job_setup_tab()
         self.create_stage_dropper_tab()
         self.create_perf_converter_tab()
 
     def refresh_tabs_for_config(self):
-        """Rebuild tabs that rely on loaded configuration."""
-        if "File Injector" in self.tabs.tab_names():
-            self.tabs.remove("File Injector")
-        if "Perf Converter" in self.tabs.tab_names():
-            self.tabs.remove("Perf Converter")
+        try:
+            existing_tabs = self.tabs._tab_dict.keys()  # FIX: tab_names() is invalid in CTkTabview
+            if "File Injector" in existing_tabs:
+                self.tabs.delete("File Injector")
+            if "Perf Converter" in existing_tabs:
+                self.tabs.delete("Perf Converter")
+        except Exception as e:
+            print(f"[DEBUG] Error refreshing tabs: {e}")
+        if not self.config_data:
+            print("[DEBUG] refresh_tabs_for_config called without config_data set")
         self.create_stage_dropper_tab()
         self.create_perf_converter_tab()
 
-    # -- Helpers --------------------------------------------------------------
     def _extract_number(self, cell):
-        """Return the first numeric value found in a table cell, or None."""
         if not cell:
             return None
         m = re.search(r"\d+(?:\.\d+)?", str(cell).replace(',', ''))
         return float(m.group()) if m else None
 
     def _extract_numbers(self, text):
-        """Return list of numeric values from arbitrary text."""
         return [float(n.replace(',', '')) for n in re.findall(r"\d+(?:\.\d+)?", text)]
 
-    # -- JSON Config Save/Load -------------------------------------------------
     def save_config(self):
-        # 1) Determine where to save: prefer the current job path if set, 
-        #    otherwise use whatever is in the Destination entry.
         destination = getattr(self, "current_job_path", None)
         if not destination:
             destination = self.destination_entry.get().strip()
-
         if not destination:
             self.status_label.configure(text="⚠️ Select destination first.")
             return
 
-        # 2) Gather well names & stage counts
         wells = []
         for entry, count in self.well_entries:
             name = entry.get().strip()
@@ -70,51 +69,40 @@ class FracMasterApp(ctk.CTk):
             if name and stages > 0:
                 wells.append({"name": name, "stages": stages})
 
-        # 3) Gather the checkbox options and file paths
         opts = {
-            "include_frac_loader":      bool(self.frac_loader_checkbox.get()),
-            "master_frac_loader_path":  self.file_paths["Master Frac Loader"].get().strip(),
-            "include_redacted_ft":      bool(self.redacted_checkbox.get()),
-            "include_witsml":           bool(self.witsml_checkbox.get()),
+            "include_frac_loader": bool(self.frac_loader_checkbox.get()),
+            "master_frac_loader_path": self.file_paths["Master Frac Loader"].get().strip(),
+            "include_redacted_ft": bool(self.redacted_checkbox.get()),
+            "include_witsml": bool(self.witsml_checkbox.get()),
             "blank_master_packet_path": self.file_paths["Blank Master Packet"].get().strip()
         }
 
-        # 4) Core fields
-        cust  = self.customer_entry.get().strip()
-        pad   = self.pad_entry.get().strip()
+        cust = self.customer_entry.get().strip()
+        pad = self.pad_entry.get().strip()
         fleet = self.fleet_entry.get().strip()
 
-        # 5) Build the config dict to serialize
         cfg = {
             "destination": destination,
-            "fleet":       fleet,
-            "customer":    cust,
-            "pad":         pad,
-            "wells":       wells,
-            "options":     opts
+            "fleet": fleet,
+            "customer": cust,
+            "pad": pad,
+            "wells": wells,
+            "options": opts
         }
 
-        # 6) Create a filesystem-safe filename
         safe_cust = cust.replace(" ", "_")
-        safe_pad  = pad.replace(" ", "_")
-        filename  = f"{safe_cust}_{safe_pad}_job_config.json"
-        path      = os.path.join(destination, filename)
+        safe_pad = pad.replace(" ", "_")
+        filename = f"{safe_cust}_{safe_pad}_job_config.json"
+        path = os.path.join(destination, filename)
 
-        # 7) Write it out (and stash in memory)
         try:
             with open(path, "w") as f:
                 json.dump(cfg, f, indent=4)
-
-            # keep a copy around for the injector tab
             self.config_data = cfg
-
-            # show forward-slashes in status for readability
-            display_path = path.replace("\\", "/")
-            self.status_label.configure(text=f"✅ Config saved to {display_path}")
+            self.status_label.configure(text=f"✅ Config saved to {path.replace('\\', '/')}")
         except Exception as e:
             self.status_label.configure(text=f"⚠️ Save error: {e}")
         else:
-            # update other tabs with the new configuration
             self.refresh_tabs_for_config()
             self._build_perf_converter_rows()
 
@@ -130,7 +118,8 @@ class FracMasterApp(ctk.CTk):
         except Exception as e:
             self.status_label.configure(text=f"⚠️ Load error: {e}")
             return
-        # Populate UI fields
+
+        self.config_data = cfg  # Ensure config is set before tab refresh
         self.destination_entry.delete(0, 'end')
         self.destination_entry.insert(0, cfg.get("destination", ""))
         self.fleet_entry.delete(0, 'end')
@@ -151,7 +140,6 @@ class FracMasterApp(ctk.CTk):
                 count.delete(0, 'end')
                 count.insert(0, str(well.get("stages", "")))
         opts = cfg.get("options", {})
-        # Frac Loader
         if opts.get("include_frac_loader"):
             self.frac_loader_checkbox.select()
         else:
@@ -159,17 +147,14 @@ class FracMasterApp(ctk.CTk):
         self.toggle_frac_loader_picker()
         self.file_paths["Master Frac Loader"].delete(0, 'end')
         self.file_paths["Master Frac Loader"].insert(0, opts.get("master_frac_loader_path", ""))
-        # Redacted FT
         if opts.get("include_redacted_ft"):
             self.redacted_checkbox.select()
         else:
             self.redacted_checkbox.deselect()
-        # WITSML
         if opts.get("include_witsml"):
             self.witsml_checkbox.select()
         else:
             self.witsml_checkbox.deselect()
-        # Blank Packet
         if opts.get("blank_master_packet_path"):
             self.blank_packet_checkbox.select()
         else:
@@ -178,9 +163,7 @@ class FracMasterApp(ctk.CTk):
         self.file_paths["Blank Master Packet"].delete(0, 'end')
         self.file_paths["Blank Master Packet"].insert(0, opts.get("blank_master_packet_path", ""))
         self.status_label.configure(text=f"✅ Config loaded from {path}")
-        self.config_data = cfg
 
-        # Rebuild tabs that rely on this configuration
         self.refresh_tabs_for_config()
         self._build_perf_converter_rows()
 
@@ -477,6 +460,8 @@ class FracMasterApp(ctk.CTk):
 
 
     # -- Perf Converter Tab -----------------------------------------------------
+    
+    
     def create_perf_converter_tab(self):
         tab = self.tabs.add("Perf Converter")
 
@@ -490,139 +475,154 @@ class FracMasterApp(ctk.CTk):
         )
         ctk.CTkLabel(tab, text=instr, justify="left").grid(row=0, column=0, columnspan=4, padx=10, pady=10, sticky="w")
 
-        # Scrollable frame for well inputs
-        self.perf_well_data = []  # list of tuples (well_name, start_entry, end_entry, cluster_entry)
-        self.perf_data = {}       # store parsed results
+        # Scrollable frame for per-well data entry
+        self.perf_well_data = []
+        self.perf_data = {}
+        self.parsed_well_names = []
         self.current_well_index = 0
 
         self.perf_rows_frame = ctk.CTkScrollableFrame(tab, width=1200, height=200)
         self.perf_rows_frame.grid(row=1, column=0, columnspan=4, padx=10, pady=5, sticky="w")
-
-        # Build rows based on current config
         self._build_perf_converter_rows()
 
-        # Upload button
-        upload_btn = ctk.CTkButton(tab, text="Upload Completion Procedure PDF", command=self.upload_pdf)
-        upload_btn.grid(row=2, column=0, padx=10, pady=10, sticky="w")
+        # Upload buttons
+        ctk.CTkButton(tab, text="Upload Completion Procedure PDF", command=self.upload_pdf).grid(row=2, column=0, padx=10, pady=10, sticky="w")
+        ctk.CTkButton(tab, text="Load Config", command=self.load_config).grid(row=2, column=2, padx=10, pady=10, sticky="w")
 
-        # Manual config loader in case Job Setup tab didn't propagate
-        load_cfg_btn = ctk.CTkButton(tab, text="Load Config", command=self.load_config)
-        load_cfg_btn.grid(row=2, column=2, padx=10, pady=10, sticky="w")
-
-        # Result box + Next/Export button
-        self.next_button = ctk.CTkButton(tab, text="Proceed to Next Well’s Perf Data",
-                                        command=self.show_next_well, state="disabled")
-        self.next_button.grid(row=2, column=1, padx=10, pady=10, sticky="w")
-
-        scroll = ctk.CTkScrollableFrame(tab, width=925, height=400)
-        scroll.grid(row=3, column=0, columnspan=4, padx=10, pady=5, sticky="w")
-        self.result_box = ctk.CTkTextbox(scroll, wrap="none", width=900, height=380)
+        # OB Agent results preview
+        ctk.CTkLabel(tab, text="🧒 OB Agent Results Preview:", font=("Segoe UI", 14, "bold")).grid(row=3, column=0, sticky="w", padx=10)
+        ob_scroll = ctk.CTkScrollableFrame(tab, width=925, height=200)
+        ob_scroll.grid(row=4, column=0, columnspan=4, padx=10, pady=(0, 10), sticky="w")
+        self.result_box = ctk.CTkTextbox(ob_scroll, wrap="none", width=900, height=180)
         self.result_box.pack(padx=5, pady=5, fill="both", expand=True)
+
+        # Raw PDF preview
+        ctk.CTkLabel(tab, text="📄 Raw Extracted PDF Text:", font=("Segoe UI", 14, "bold")).grid(row=5, column=0, sticky="w", padx=10)
+        raw_scroll = ctk.CTkScrollableFrame(tab, width=925, height=200)
+        raw_scroll.grid(row=6, column=0, columnspan=4, padx=10, pady=(0, 10), sticky="w")
+        self.raw_preview_box = ctk.CTkTextbox(raw_scroll, wrap="none", width=900, height=180)
+        self.raw_preview_box.pack(padx=5, pady=5, fill="both", expand=True)
+
         self._render_perf_results()
 
+    def upload_pdf(self):
+        from tkinter import filedialog
+        import json
+        from fracmaster_toolbox.ob_agent import call_ob_agent
+        from fracmaster_toolbox.utils import perf_parser
 
-    def _build_perf_converter_rows(self):
-        """Create per-well page range and cluster entry rows."""
-        if not hasattr(self, "perf_rows_frame"):
+        file_path = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
+        if not file_path:
             return
-        for widget in self.perf_rows_frame.winfo_children():
-            widget.destroy()
-        self.perf_well_data = []
-        wells = self.config_data.get("wells") or []
-        if not wells:
-            ctk.CTkLabel(self.perf_rows_frame, text="⚠️ Load a job config first!").pack(pady=20)
-            return
-        for i, w in enumerate(wells):
-            name = w["name"]
-            start = ctk.CTkEntry(self.perf_rows_frame, placeholder_text=f"{name}: Start Pg")
-            end = ctk.CTkEntry(self.perf_rows_frame, placeholder_text="End Pg")
-            cl = ctk.CTkEntry(self.perf_rows_frame, placeholder_text="# Clusters/Stage")
-            start.grid(row=i, column=0, padx=5, pady=2, sticky="w")
-            end.grid(row=i, column=1, padx=5, pady=2, sticky="w")
-            cl.grid(row=i, column=2, padx=5, pady=2, sticky="w")
-            self.perf_well_data.append((name, start, end, cl))
+
+        self.perf_data = {}
+        self.parsed_well_names = []
+        self.current_well_index = 0
+
+        well_map = {}
+        for name, entry_start, entry_end, entry_clust in self.perf_well_data:
+            try:
+                start_page = int(entry_start.get())
+                end_page = int(entry_end.get())
+                clusters = int(entry_clust.get())
+            except:
+                start_page = end_page = clusters = 0
+            well_map[name] = {"start_page": start_page, "end_page": end_page, "n_clusters": clusters}
+
+        pdf_text_by_well = perf_parser.extract_text_by_well(file_path, well_map)
+
+        self.raw_preview_box.delete("1.0", "end")
+        for well, text in pdf_text_by_well.items():
+            self.raw_preview_box.insert("end", f"\n==== {well} PDF Text ====\n{text}\n")
+
+        payload = {
+            "pdf_text": pdf_text_by_well,
+            "job_config": self.config_data,
+            "well_map": well_map,
+            "instructions": "Extract plug, top, and bottom perf for each stage per well."
+        }
+
+        try:
+            result = call_ob_agent("perf_parser", payload)
+            if isinstance(result, str):
+                try:
+                    result = json.loads(result)
+                except json.JSONDecodeError:
+                    result = {}
+
+            self.perf_data = result.get("perf_data", {})
+            self.parsed_well_names = list(self.perf_data.keys())
+
+            if self.parsed_well_names:
+                self._display_well_data(self.parsed_well_names[0])
+                self._add_next_well_button()
+
+        except Exception as e:
+            self.result_box.delete("1.0", "end")
+            self.result_box.insert("end", f"⚠️ Error: {e}")
 
     def _render_perf_results(self):
-        """Render self.perf_data into the results textbox."""
         self.result_box.delete("1.0", "end")
         for well, stages in self.perf_data.items():
             self.result_box.insert("end", f"\n=== {well}: Parsed {len(stages)} stages ===\n")
             for stg, plug, top, bot in stages:
-                self.result_box.insert(
-                    "end", f"  Stage {stg}: plug={plug}, top={top}, bot={bot}\n"
-                )
-        if self.perf_data:
-            self.next_button.configure(state="normal")
+                self.result_box.insert("end", f"Stage {stg}: plug={plug}, top={top}, bot={bot}\n")
 
-    def upload_pdf(self):
-        pdf = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
-        if not pdf:
+        if self.perf_data:
+            self._add_next_well_button()
+
+    def _build_perf_converter_rows(self):
+        for widget in self.perf_rows_frame.winfo_children():
+            widget.destroy()
+
+        self.perf_well_data.clear()
+        for i, well in enumerate(self.config_data.get("wells", [])):
+            name = well["name"]
+            ctk.CTkLabel(self.perf_rows_frame, text=f"{name}:").grid(row=i, column=0, padx=5, pady=2)
+            entry_start = ctk.CTkEntry(self.perf_rows_frame, width=40)
+            entry_end = ctk.CTkEntry(self.perf_rows_frame, width=40)
+            entry_clust = ctk.CTkEntry(self.perf_rows_frame, width=40)
+            entry_start.grid(row=i, column=1)
+            entry_end.grid(row=i, column=2)
+            entry_clust.grid(row=i, column=3)
+            self.perf_well_data.append((name, entry_start, entry_end, entry_clust))
+
+    def _display_well_data(self, well_name):
+        if well_name not in self.perf_data:
             return
 
-        # reset state
-        self.perf_data.clear()
         self.result_box.delete("1.0", "end")
-        self.current_well_index = 0
+        self.result_box.insert("end", f"=== {well_name} Results ===\n")
+        for stg, plug, top, bot in self.perf_data[well_name]:
+            self.result_box.insert("end", f"Stage {stg}: plug={plug}, top={top}, bot={bot}\n")
 
-        # Build well_map from entry rows
-        well_map = {}
-        for well_name, start_e, end_e, cl_e in self.perf_well_data:
-            try:
-                start = int(start_e.get())
-            except Exception:
-                start = 0
-            try:
-                end = int(end_e.get())
-            except Exception:
-                end = 0
-            try:
-                ncl = int(cl_e.get())
-            except Exception:
-                ncl = 0
-            well_map[well_name] = {
-                "start_page": start,
-                "end_page": end,
-                "n_clusters": ncl,
-            }
+    def _add_next_well_button(self):
+        if hasattr(self, "next_well_btn"):
+            self.next_well_btn.destroy()
 
-        payload = {"job_config": self.config_data, "well_map": well_map}
-
-        try:
-            from fracmaster_toolbox.ob_agent import call_ob_agent
-            result = call_ob_agent("perf_converter_parser", {"pdf_path": pdf, **payload})
-            perf_data = result["perf_data"]
-        except Exception:
-            perf_data = perf_parser.parse_pdf(pdf, well_map)
-
-        self.perf_data = perf_data
-        self._render_perf_results()
+        self.next_well_btn = ctk.CTkButton(
+            self.tabs.get_tab("Perf Converter"),
+            text="Proceed to Next Well",
+            command=self.show_next_well
+        )
+        self.next_well_btn.grid(row=7, column=0, columnspan=4, padx=10, pady=10, sticky="we")
 
     def show_next_well(self):
-        wells = list(self.perf_data)
-        if self.current_well_index < len(wells):
-            w = wells[self.current_well_index]
-            self.result_box.insert("end", f"\n>>> {w} <<<\n")
-            for stg, plug, top, bot in self.perf_data[w]:
-                self.result_box.insert("end", f"  {stg}: plug={plug}, top={top}, bot={bot}\n")
-            self.current_well_index += 1
-            if self.current_well_index >= len(wells):
-                self.next_button.configure(text="Export to Excel", command=self.export_excel)
-        else:
-            self.export_excel()
-
-    def export_excel(self):
-        default = "Perf_Converter_" + "-".join(self.perf_data.keys()) + ".xlsx"
-        path = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile=default, filetypes=[("Excel","*.xlsx")])
-        if not path:
+        self.current_well_index += 1
+        if self.current_well_index >= len(self.parsed_well_names):
+            self.next_well_btn.configure(state="disabled")
             return
-        file_utils.save_perf_excel(self.perf_data, path)
-        self.result_box.insert("end", f"\n✅ Saved Excel: {path}\n")
+
+        next_well = self.parsed_well_names[self.current_well_index]
+        print("[DEBUG] Displaying data for well:", next_well)
+        self._display_well_data(next_well)
+
+
 
 
 def main():
     app = FracMasterApp()
     app.mainloop()
-
 
 if __name__ == "__main__":
     main()
