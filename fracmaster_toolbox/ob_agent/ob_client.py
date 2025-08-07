@@ -14,21 +14,24 @@ from openai import OpenAI
 from .ob_prompts import DEFAULT_ROLE, ROLE_PROMPTS
 
 # Configure logging with daily file naming. Logs are written to the repository
-# `log/` directory so they can be inspected outside of runtime.
-LOG_DIR = Path(__file__).resolve().parents[2] / "log"
+# `logs/` directory so they can be inspected outside of runtime.
+LOG_DIR = Path(__file__).resolve().parents[2] / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 # Create a log file with today's date
 log_filename = LOG_DIR / f"ob_agent_{datetime.now().strftime('%Y-%m-%d')}.log"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler(log_filename), logging.StreamHandler()],
-)
+logger = logging.getLogger("ob_agent")
+logger.setLevel(logging.INFO)
 
-# Module level logger used by other OB utilities
-logger = logging.getLogger(__name__)
+if not logger.handlers:
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    file_handler = logging.FileHandler(log_filename, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    logger.addHandler(stream_handler)
 
 
 class OB:
