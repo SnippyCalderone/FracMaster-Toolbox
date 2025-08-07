@@ -13,8 +13,9 @@ from openai import OpenAI
 
 from .ob_prompts import DEFAULT_ROLE, ROLE_PROMPTS
 
-# Configure logging with daily file naming
-LOG_DIR = Path(__file__).resolve().parents[2] / "logs"
+# Configure logging with daily file naming. Logs are written to the repository
+# `log/` directory so they can be inspected outside of runtime.
+LOG_DIR = Path(__file__).resolve().parents[2] / "log"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 # Create a log file with today's date
@@ -25,6 +26,8 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[logging.FileHandler(log_filename), logging.StreamHandler()],
 )
+
+# Module level logger used by other OB utilities
 logger = logging.getLogger(__name__)
 
 
@@ -49,7 +52,8 @@ class OB:
     def send_message(self, prompt: str) -> str:
         """Send a message to OB and return the response text."""
         system_prompt = ROLE_PROMPTS.get(self.role, ROLE_PROMPTS[DEFAULT_ROLE])
-        logger.info("Role: %s | Prompt: %s", self.role, prompt)
+        # Log an excerpt of the payload to avoid huge log files
+        logger.info("Role: %s | Prompt: %s", self.role, prompt[:1000])
         response = self.client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -58,5 +62,5 @@ class OB:
             ],
         )
         content = response.choices[0].message.content
-        logger.info("Response: %s", content)
+        logger.info("Response: %s", content[:1000])
         return content
