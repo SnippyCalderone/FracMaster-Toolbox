@@ -493,18 +493,23 @@ class FracMasterApp(ctk.CTk):
         ctk.CTkButton(tab, text="Upload Completion Procedure PDF", command=self.upload_pdf).grid(row=2, column=0, padx=10, pady=10, sticky="w")
         ctk.CTkButton(tab, text="Load Config", command=self.load_config).grid(row=2, column=2, padx=10, pady=10, sticky="w")
 
-        # OB Agent results preview
-        ctk.CTkLabel(tab, text="🧒 OB Agent Results Preview:", font=("Segoe UI", 14, "bold")).grid(row=3, column=0, sticky="w", padx=10)
-        ob_scroll = ctk.CTkScrollableFrame(tab, width=925, height=200)
-        ob_scroll.grid(row=4, column=0, columnspan=4, padx=10, pady=(0, 10), sticky="w")
-        self.result_box = ctk.CTkTextbox(ob_scroll, wrap="none", width=900, height=180)
+        # Result and raw text previews side-by-side
+        preview_frame = ctk.CTkFrame(tab)
+        preview_frame.grid(row=3, column=0, columnspan=4, padx=10, pady=10, sticky="we")
+        preview_frame.grid_columnconfigure(0, weight=1)
+        preview_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(preview_frame, text="🧒 OB Agent Results Preview:", font=("Segoe UI", 14, "bold")).grid(row=0, column=0, sticky="w", padx=5)
+        ctk.CTkLabel(preview_frame, text="📄 Raw Extracted PDF Text:", font=("Segoe UI", 14, "bold")).grid(row=0, column=1, sticky="w", padx=5)
+
+        ob_scroll = ctk.CTkScrollableFrame(preview_frame, width=450, height=200)
+        ob_scroll.grid(row=1, column=0, padx=5, pady=(0, 10), sticky="nsew")
+        self.result_box = ctk.CTkTextbox(ob_scroll, wrap="none", width=430, height=180)
         self.result_box.pack(padx=5, pady=5, fill="both", expand=True)
 
-        # Raw PDF preview
-        ctk.CTkLabel(tab, text="📄 Raw Extracted PDF Text:", font=("Segoe UI", 14, "bold")).grid(row=5, column=0, sticky="w", padx=10)
-        raw_scroll = ctk.CTkScrollableFrame(tab, width=925, height=200)
-        raw_scroll.grid(row=6, column=0, columnspan=4, padx=10, pady=(0, 10), sticky="w")
-        self.raw_preview_box = ctk.CTkTextbox(raw_scroll, wrap="none", width=900, height=180)
+        raw_scroll = ctk.CTkScrollableFrame(preview_frame, width=450, height=200)
+        raw_scroll.grid(row=1, column=1, padx=5, pady=(0, 10), sticky="nsew")
+        self.raw_preview_box = ctk.CTkTextbox(raw_scroll, wrap="none", width=430, height=180)
         self.raw_preview_box.pack(padx=5, pady=5, fill="both", expand=True)
 
         self._render_perf_results()
@@ -626,7 +631,7 @@ class FracMasterApp(ctk.CTk):
             text="Proceed to Next Well",
             command=self.show_next_well
         )
-        self.next_well_btn.grid(row=7, column=0, columnspan=4, padx=10, pady=10, sticky="we")
+        self.next_well_btn.grid(row=4, column=0, columnspan=4, padx=10, pady=10, sticky="we")
 
     def show_next_well(self):
         self.current_well_index += 1

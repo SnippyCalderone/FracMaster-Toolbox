@@ -66,4 +66,5 @@ class OB:
         )
         content = response.choices[0].message.content
         logger.info("Response: %s", content[:1000])
+
         return content
