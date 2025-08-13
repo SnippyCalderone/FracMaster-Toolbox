@@ -6,8 +6,9 @@ from tkinter import filedialog
 import re
 import subprocess
 import sys
-from fracmaster_toolbox.utils import perf_parser, file_utils
+from fracmaster_toolbox.utils import perf_parser
 from fracmaster_toolbox.ob_agent import call_ob_agent
+import csv
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -41,15 +42,6 @@ class FracMasterApp(ctk.CTk):
             print("[DEBUG] refresh_tabs_for_config called without config_data set")
         self.create_stage_dropper_tab()
         self.create_perf_converter_tab()
-
-    def _extract_number(self, cell):
-        if not cell:
-            return None
-        m = re.search(r"\d+(?:\.\d+)?", str(cell).replace(',', ''))
-        return float(m.group()) if m else None
-
-    def _extract_numbers(self, text):
-        return [float(n.replace(',', '')) for n in re.findall(r"\d+(?:\.\d+)?", text)]
 
     def save_config(self):
         destination = getattr(self, "current_job_path", None)
@@ -167,6 +159,126 @@ class FracMasterApp(ctk.CTk):
 
         self.refresh_tabs_for_config()
         self._build_perf_converter_rows()
+        
+    def export_csv_for_well(self, well: str):
+        if well not in self.perf_data:
+            self.status_label.configure(text=f"⚠️ No data for {well}")
+            return
+
+        cfg = self.config_data
+        base = cfg.get("destination", "")
+        cust = cfg.get("customer", "")
+        pad  = cfg.get("pad", "")
+        well_dir = os.path.join(base, f"{cust} {pad}", well)
+        os.makedirs(well_dir, exist_ok=True)
+        out_path = os.path.join(well_dir, f"{well} Perf Summary.csv")
+
+        # ✅ SORT HERE before writing
+        rows = sorted(self.perf_data[well], key=lambda r: int(str(r[0]).zfill(2)))
+
+        with open(out_path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["Well", "Stage", "Plug(ftKB)", "Top(ftKB)", "Bottom(ftKB)"])
+            for stg, plug, top, bot in rows:
+                s = str(stg).zfill(2)
+                # Stage 01: leave top/bottom blank so user can revise
+                if s == "01":
+                    top_out = ""
+                    bot_out = ""
+                else:
+                    top_out = "" if top is None else top
+                    bot_out = "" if bot is None else bot
+                w.writerow([well, s, "" if plug is None else plug, top_out, bot_out])
+
+        self.status_label.configure(text=f"✅ Exported: {out_path}")
+
+
+    def export_current_well_csv(self):
+        if self.parsed_well_names:
+            idx = min(self.current_well_index, len(self.parsed_well_names) - 1)
+            self.export_csv_for_well(self.parsed_well_names[idx])
+        else:
+            self.status_label.configure(text="⚠️ No well selected/parsed yet")
+
+    def export_all_wells_csv(self):
+        if not self.perf_data:
+            self.status_label.configure(text="⚠️ Nothing to export")
+            return
+        for well in self.perf_data.keys():
+            self.export_csv_for_well(well)
+            
+    def _get_parser_knobs(self):
+        # Min depth
+        md_txt = (self.knob_min_depth_entry.get().strip() if hasattr(self, "knob_min_depth_entry") else "")
+        try:
+            min_depth = float(md_txt) if md_txt else None
+        except:
+            min_depth = None
+
+        # Window below plug
+        try:
+            window = float(self.knob_window_entry.get().strip())
+        except:
+            window = 1200.0
+
+        prefer = bool(self.knob_prefer_explicit_var.get()) if hasattr(self, "knob_prefer_explicit_var") else True
+        return {
+            "min_depth": min_depth,
+            "window_below_plug": window,
+            "prefer_explicit_top_bottom": prefer,
+        }
+        
+    def _append_ob_comparison(self, ob_perf: dict):
+        # print OB rows and flag mismatches relative to local (>5 ft)
+        tol = 5.0
+        for well, stages in ob_perf.items():
+            self.result_box.insert("end", f"\n=== {well}: Parsed {len(stages)} stages (OB) ===\n")
+            # normalize dict for easy lookup
+            local_map = {}
+            if well in self.perf_data:
+                for stg, plug, top, bot in self.perf_data[well]:
+                    local_map[str(stg).zfill(2)] = (plug, top, bot)
+
+            # sort OB stages
+            try:
+                stages_sorted = sorted(stages, key=lambda r: int(str(r[0]).zfill(2)))
+            except Exception:
+                stages_sorted = stages
+
+            for stg, plug, top, bot in stages_sorted:
+                s = str(stg).zfill(2)
+                # Stage 01 display rule
+                t_disp = "NULL" if s == "01" else ("NULL" if top is None else top)
+                b_disp = "NULL" if s == "01" else ("NULL" if bot is None else bot)
+
+                # Diff
+                flag = ""
+                if s in local_map:
+                    l_plug, l_top, l_bot = local_map[s]
+                    def delta(a, b):
+                        if a is None or b is None: return None
+                        try: return abs(float(a) - float(b))
+                        except: return None
+                    d_plug = delta(plug, l_plug)
+                    d_top  = delta(top,  l_top)
+                    d_bot  = delta(bot,  l_bot)
+                    if (d_plug and d_plug > tol) or (d_top and d_top > tol) or (d_bot and d_bot > tol):
+                        flag = "  ⚠️ diff vs Local"
+
+                self.result_box.insert("end", f"Stage {s}: plug={plug}, top={t_disp}, bot={b_disp}{flag}\n")
+                
+    def toggle_advanced_panel(self):
+        if not self.adv_shown:
+            self.adv_frame.grid(row=5, column=0, columnspan=4, padx=10, pady=10, sticky="we")
+            self.adv_toggle_btn.configure(text="Hide Advanced Parser Settings")
+            self.adv_shown = True
+        else:
+            self.adv_frame.grid_forget()
+            self.adv_toggle_btn.configure(text="Show Advanced Parser Settings")
+            self.adv_shown = False
+
+
+
 
 
 
@@ -476,43 +588,103 @@ class FracMasterApp(ctk.CTk):
             "Enter only Page Ranges and # Clusters/Stage for each well below,\n"
             "then click “Proceed to Next Well’s Perf Data”."
         )
-        ctk.CTkLabel(tab, text=instr, justify="left").grid(row=0, column=0, columnspan=4, padx=10, pady=10, sticky="w")
+        ctk.CTkLabel(tab, text=instr, justify="left").grid(
+            row=0, column=0, columnspan=4, padx=10, pady=10, sticky="w"
+        )
 
-        # Scrollable frame for per-well data entry
-        self.perf_well_data = []
-        self.perf_data = {}
-        self.parsed_well_names = []
+        # State used by Perf Converter
+        self.perf_well_data = []       # [(name, entry_start, entry_end, entry_clust), ...]
+        self.perf_data = {}            # {well: [(stage, plug, top, bottom), ...]}
+        self.parsed_well_names = []    # order-preserving list of wells with results
         self.current_well_index = 0
         self.next_well_btn = None
 
+        # Per-well inputs (start/end pages, clusters)
         self.perf_rows_frame = ctk.CTkScrollableFrame(tab, width=1200, height=200)
-        self.perf_rows_frame.grid(row=1, column=0, columnspan=4, padx=10, pady=5, sticky="w")
+        self.perf_rows_frame.grid(row=1, column=0, columnspan=4, padx=10, pady=5, sticky="we")
         self._build_perf_converter_rows()
 
-        # Upload buttons
-        ctk.CTkButton(tab, text="Upload Completion Procedure PDF", command=self.upload_pdf).grid(row=2, column=0, padx=10, pady=10, sticky="w")
-        ctk.CTkButton(tab, text="Load Config", command=self.load_config).grid(row=2, column=2, padx=10, pady=10, sticky="w")
+        # Actions
+        ctk.CTkButton(tab, text="Upload Completion Procedure PDF", command=self.upload_pdf).grid(
+            row=2, column=0, padx=10, pady=10, sticky="w"
+        )
+        ctk.CTkButton(tab, text="Load Config", command=self.load_config).grid(
+            row=2, column=2, padx=10, pady=10, sticky="w"
+        )
 
-        # Result and raw text previews side-by-side
+        # Results + Raw Text previews (side-by-side)
         preview_frame = ctk.CTkFrame(tab)
-        preview_frame.grid(row=3, column=0, columnspan=4, padx=10, pady=10, sticky="we")
+        preview_frame.grid(row=3, column=0, columnspan=4, padx=10, pady=10, sticky="nsew")
         preview_frame.grid_columnconfigure(0, weight=1)
         preview_frame.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(preview_frame, text="🧒 OB Agent Results Preview:", font=("Segoe UI", 14, "bold")).grid(row=0, column=0, sticky="w", padx=5)
-        ctk.CTkLabel(preview_frame, text="📄 Raw Extracted PDF Text:", font=("Segoe UI", 14, "bold")).grid(row=0, column=1, sticky="w", padx=5)
+        ctk.CTkLabel(
+            preview_frame,
+            text="Results Preview (Local → OB + Diff):",
+            font=("Segoe UI", 14, "bold")
+        ).grid(row=0, column=0, sticky="w", padx=5)
 
+        ctk.CTkLabel(
+            preview_frame,
+            text="📄 Raw Extracted PDF Text:",
+            font=("Segoe UI", 14, "bold")
+        ).grid(row=0, column=1, sticky="w", padx=5)
+
+        # Left: results box
         ob_scroll = ctk.CTkScrollableFrame(preview_frame, width=450, height=200)
         ob_scroll.grid(row=1, column=0, padx=5, pady=(0, 10), sticky="nsew")
         self.result_box = ctk.CTkTextbox(ob_scroll, wrap="none", width=430, height=180)
         self.result_box.pack(padx=5, pady=5, fill="both", expand=True)
 
+        # Right: raw text box
         raw_scroll = ctk.CTkScrollableFrame(preview_frame, width=450, height=200)
         raw_scroll.grid(row=1, column=1, padx=5, pady=(0, 10), sticky="nsew")
         self.raw_preview_box = ctk.CTkTextbox(raw_scroll, wrap="none", width=430, height=180)
         self.raw_preview_box.pack(padx=5, pady=5, fill="both", expand=True)
 
+        # Export buttons
+        export_frame = ctk.CTkFrame(preview_frame)
+        export_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=(10, 0), sticky="w")
+        ctk.CTkButton(export_frame, text="Export CSV (current well)", command=self.export_current_well_csv)\
+            .pack(side="left", padx=(0, 8))
+        ctk.CTkButton(export_frame, text="Export CSV (all wells)", command=self.export_all_wells_csv)\
+            .pack(side="left")
+
+        # Advanced knobs (optional)
+        self.adv_shown = False
+        self.adv_toggle_btn = ctk.CTkButton(
+            tab, text="Show Advanced Parser Settings",
+            command=self.toggle_advanced_panel
+        )
+        self.adv_toggle_btn.grid(row=4, column=0, padx=10, pady=(10, 0), sticky="w")
+
+        self.adv_frame = ctk.CTkFrame(tab)
+
+        row = ctk.CTkFrame(self.adv_frame); row.pack(fill="x", pady=4)
+        ctk.CTkLabel(row, text="Min depth (ft, blank = auto)").pack(side="left")
+        self.knob_min_depth_entry = ctk.CTkEntry(row, width=120, placeholder_text="")
+        self.knob_min_depth_entry.pack(side="left", padx=6)
+
+        row2 = ctk.CTkFrame(self.adv_frame); row2.pack(fill="x", pady=4)
+        ctk.CTkLabel(row2, text="Cluster window below plug (ft)").pack(side="left")
+        self.knob_window_entry = ctk.CTkEntry(row2, width=120)
+        self.knob_window_entry.insert(0, "1200")
+        self.knob_window_entry.pack(side="left", padx=6)
+
+        row3 = ctk.CTkFrame(self.adv_frame); row3.pack(fill="x", pady=4)
+        self.knob_prefer_explicit_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            row3,
+            text="Prefer explicit Top/Bottom columns if present",
+            variable=self.knob_prefer_explicit_var
+        ).pack(side="left")
+
+
+        # Render any existing results
         self._render_perf_results()
+
+
+        
     def upload_pdf(self):
         from tkinter import filedialog
         import json
@@ -528,20 +700,57 @@ class FracMasterApp(ctk.CTk):
         if not file_path:
             return
 
+        # Build well_map from your UI entries
         self.perf_data = {}
         self.parsed_well_names = []
         self.current_well_index = 0
 
+        # Build well_map from your UI entries (with guarded page ranges)
         well_map: dict[str, dict[str, int]] = {}
         for name, entry_start, entry_end, entry_clust in self.perf_well_data:
-            try:
-                start_page = int(entry_start.get())
-                end_page = int(entry_end.get())
-                clusters = int(entry_clust.get())
-            except Exception:
-                start_page = end_page = clusters = 0
-            well_map[name] = {"start_page": start_page, "end_page": end_page, "n_clusters": clusters}
+            # raw strings from entries
+            sp_txt = (entry_start.get() or "").strip()
+            ep_txt = (entry_end.get() or "").strip()
+            cl_txt = (entry_clust.get() or "").strip()
 
+            # defaults
+            start_page = 0
+            end_page = 0
+            clusters = 0
+
+            # parse clusters safely
+            try:
+                clusters = int(cl_txt) if cl_txt else 0
+            except:
+                clusters = 0
+
+            # parse pages safely
+            try:
+                if sp_txt:
+                    start_page = max(1, int(sp_txt))   # clamp to 1+
+                if ep_txt:
+                    end_page = max(1, int(ep_txt))     # clamp to 1+
+            except:
+                # if parsing fails, leave as 0 so auto-detect can kick in
+                start_page = 0
+                end_page = 0
+
+            # convenience: if user gave only start, assume single-page range
+            if start_page and not end_page:
+                end_page = start_page
+
+            # guard reversed ranges: End < Start → set End = Start
+            if start_page and end_page and end_page < start_page:
+                end_page = start_page
+
+            well_map[name] = {
+                "start_page": start_page,  # 0,0 means: let parser auto-find pages
+                "end_page": end_page,
+                "n_clusters": clusters,
+            }
+
+
+        # --- RAW TEXT (for right-hand preview) ---
         try:
             pdf_text_by_well = perf_parser.extract_text_by_well(file_path, well_map)
         except Exception as e:
@@ -551,8 +760,36 @@ class FracMasterApp(ctk.CTk):
 
         self.raw_preview_box.delete("1.0", "end")
         for well, text in pdf_text_by_well.items():
-            self.raw_preview_box.insert("end", f"\\n==== {well} PDF Text ====\\n{text}\\n")
+            self.raw_preview_box.insert("end", f"\n==== {well} PDF Text ====\n{text}\n")
 
+        # --- LOCAL STRUCTURED PARSE (new universal parser) ---
+        knobs = self._get_parser_knobs()
+        try:
+            local_structured = perf_parser.parse_pdf_structured(
+                file_path,
+                well_map,
+                min_depth=knobs["min_depth"],
+                window_below_plug=knobs["window_below_plug"],
+                prefer_explicit_top_bottom=knobs["prefer_explicit_top_bottom"],
+                split_digit_stage=True,
+                stage01_null=False,  # leave Stage 01 values intact; we null in GUI display
+            )
+        except Exception as e:
+            local_structured = {}
+            self.result_box.delete("1.0", "end")
+            self.result_box.insert("end", f"🧰 Local Parser Results:\n⚠️ Parser error: {e}\n")
+
+        # Show LOCAL results first
+        self.result_box.delete("1.0", "end")
+        self.result_box.insert("end", "🧰 Local Parser Results:\n")
+        if local_structured:
+            self.perf_data = local_structured
+            self.parsed_well_names = [w for w in well_map if w in self.perf_data]
+            self._render_perf_results()
+        else:
+            self.result_box.insert("end", "⚠️ No rows parsed locally.\n")
+
+        # --- OB PARSE (optional validator) ---
         payload = {
             "pdf_text": pdf_text_by_well,
             "job_config": self.config_data,
@@ -560,37 +797,52 @@ class FracMasterApp(ctk.CTk):
             "instructions": "Extract plug, top, and bottom perf for each stage per well.",
         }
 
-        result = call_ob_agent("perf_parser", payload)
-        if isinstance(result, str):
-            try:
-                result = json.loads(result)
-            except json.JSONDecodeError:
-                result = {"error": "Invalid JSON from OB"}
+        try:
+            ob = call_ob_agent("perf_parser", payload)
+        except Exception as e:
+            ob = {"error": f"OB call failed: {e}"}
 
-        if "error" in result:
-            self.result_box.delete("1.0", "end")
-            self.result_box.insert("end", f"⚠️ {result['error']}")
+        if isinstance(ob, str):
+            try:
+                ob = json.loads(ob)
+            except json.JSONDecodeError:
+                ob = {"error": "Invalid JSON from OB"}
+
+        self.result_box.insert("end", "\n🤖 OB Agent Results:\n")
+        if "error" in ob:
+            self.result_box.insert("end", f"⚠️ {ob['error']}\n")
             return
 
-        self.perf_data = result.get("perf_data", {})
-        # Maintain original well order
-        self.parsed_well_names = [w for w in well_map if w in self.perf_data]
+        ob_perf = ob.get("perf_data", {})
+        if not ob_perf:
+            self.result_box.insert("end", "⚠️ No perf data returned by OB.\n")
+            return
+
+        # Append OB rows (with Stage 01 shown as NULL in display) + diff per stage
+        self._append_ob_comparison(ob_perf)
 
         if self.parsed_well_names:
-            self._display_well_data(self.parsed_well_names[0])
             self._add_next_well_button()
-        else:
-            self.result_box.delete("1.0", "end")
-            self.result_box.insert("end", "⚠️ No perf data returned")
+
+
     def _render_perf_results(self):
-        self.result_box.delete("1.0", "end")
         for well, stages in self.perf_data.items():
-            self.result_box.insert("end", f"\n=== {well}: Parsed {len(stages)} stages ===\n")
-            for stg, plug, top, bot in stages:
-                self.result_box.insert("end", f"Stage {stg}: plug={plug}, top={top}, bot={bot}\n")
+            self.result_box.insert("end", f"\n=== {well}: Parsed {len(stages)} stages (Local) ===\n")
+            # sort just in case
+            try:
+                stages_sorted = sorted(stages, key=lambda r: int(str(r[0]).zfill(2)))
+            except Exception:
+                stages_sorted = stages
+            for stg, plug, top, bot in stages_sorted:
+                s = str(stg).zfill(2)
+                # GUI rule: Stage 01 → NULL/null for top/bottom display
+                top_disp = "NULL" if s == "01" else ("NULL" if top is None else top)
+                bot_disp = "NULL" if s == "01" else ("NULL" if bot is None else bot)
+                self.result_box.insert("end", f"Stage {s}: plug={plug}, top={top_disp}, bot={bot_disp}\n")
 
         if self.perf_data:
             self._add_next_well_button()
+
 
     def _build_perf_converter_rows(self):
         for widget in self.perf_rows_frame.winfo_children():
@@ -616,11 +868,19 @@ class FracMasterApp(ctk.CTk):
     def _display_well_data(self, well_name):
         if well_name not in self.perf_data:
             return
-
         self.result_box.delete("1.0", "end")
-        self.result_box.insert("end", f"=== {well_name} Results ===\n")
-        for stg, plug, top, bot in self.perf_data[well_name]:
-            self.result_box.insert("end", f"Stage {stg}: plug={plug}, top={top}, bot={bot}\n")
+        self.result_box.insert("end", f"=== {well_name} Results (Local) ===\n")
+        stages = self.perf_data[well_name]
+        try:
+            stages = sorted(stages, key=lambda r: int(str(r[0]).zfill(2)))
+        except Exception:
+            pass
+        for stg, plug, top, bot in stages:
+            s = str(stg).zfill(2)
+            top_disp = "NULL" if s == "01" else ("NULL" if top is None else top)
+            bot_disp = "NULL" if s == "01" else ("NULL" if bot is None else bot)
+            self.result_box.insert("end", f"Stage {s}: plug={plug}, top={top_disp}, bot={bot_disp}\n")
+
 
     def _add_next_well_button(self):
         if self.next_well_btn:
@@ -631,7 +891,9 @@ class FracMasterApp(ctk.CTk):
             text="Proceed to Next Well",
             command=self.show_next_well
         )
-        self.next_well_btn.grid(row=4, column=0, columnspan=4, padx=10, pady=10, sticky="we")
+        # was row=4 — move it below the Advanced panel
+        self.next_well_btn.grid(row=6, column=0, columnspan=4, padx=10, pady=10, sticky="we")
+
 
     def show_next_well(self):
         self.current_well_index += 1
