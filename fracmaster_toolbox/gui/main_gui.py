@@ -612,23 +612,17 @@ class FracMasterApp(ctk.CTk):
             row=2, column=2, padx=10, pady=10, sticky="w"
         )
 
-        # Results + Raw Text previews (side-by-side)
+        # Results area container (two-column)
         preview_frame = ctk.CTkFrame(tab)
-        preview_frame.grid(row=3, column=0, columnspan=4, padx=10, pady=10, sticky="nsew")
+        preview_frame.grid(row=3, column=0, columnspan=4, padx=10, pady=10, sticky="we")
         preview_frame.grid_columnconfigure(0, weight=1)
         preview_frame.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
-            preview_frame,
-            text="Results Preview (Local → OB + Diff):",
+            preview_frame, text="Results Preview (Local → OB + Diff):",
             font=("Segoe UI", 14, "bold")
         ).grid(row=0, column=0, sticky="w", padx=5)
-
-        ctk.CTkLabel(
-            preview_frame,
-            text="📄 Raw Extracted PDF Text:",
-            font=("Segoe UI", 14, "bold")
-        ).grid(row=0, column=1, sticky="w", padx=5)
+        
 
         # Left: results box
         ob_scroll = ctk.CTkScrollableFrame(preview_frame, width=450, height=200)
@@ -636,11 +630,28 @@ class FracMasterApp(ctk.CTk):
         self.result_box = ctk.CTkTextbox(ob_scroll, wrap="none", width=430, height=180)
         self.result_box.pack(padx=5, pady=5, fill="both", expand=True)
 
-        # Right: raw text box
-        raw_scroll = ctk.CTkScrollableFrame(preview_frame, width=450, height=200)
-        raw_scroll.grid(row=1, column=1, padx=5, pady=(0, 10), sticky="nsew")
-        self.raw_preview_box = ctk.CTkTextbox(raw_scroll, wrap="none", width=430, height=180)
-        self.raw_preview_box.pack(padx=5, pady=5, fill="both", expand=True)
+        # ── Right control panel (NEW) ────────────────────────────────────────────
+        right_panel = ctk.CTkFrame(preview_frame)
+        right_panel.grid(row=1, column=1, padx=5, pady=(0,10), sticky="nsew")
+        right_panel.grid_columnconfigure(0, weight=1)
+
+        # OB Mode segmented control
+        ctk.CTkLabel(right_panel, text="OB Mode").grid(row=0, column=0, sticky="w", padx=6, pady=(8,2))
+        self.ob_mode_var = ctk.StringVar(value="Auto")
+        ctk.CTkSegmentedButton(
+            right_panel,
+            values=["Never", "Auto", "Always"],
+            variable=self.ob_mode_var
+        ).grid(row=1, column=0, sticky="w", padx=6)
+
+        # Raw text popup
+        ctk.CTkButton(
+            right_panel, text="View Raw Text…", command=self.view_raw_text_popup
+        ).grid(row=2, column=0, sticky="w", padx=6, pady=(10,2))
+
+        # Regions status placeholder (for later when we add the annotator)
+        self.regions_status_label = ctk.CTkLabel(right_panel, text="Regions: none")
+        self.regions_status_label.grid(row=3, column=0, sticky="w", padx=6, pady=(8,2))
 
         # Export buttons
         export_frame = ctk.CTkFrame(preview_frame)
@@ -682,8 +693,14 @@ class FracMasterApp(ctk.CTk):
 
         # Render any existing results
         self._render_perf_results()
-
-
+        
+    def _format_stage_row(self, stage, plug, top, bot):
+        s = str(stage).zfill(2)
+        def fmt_num(x):
+            return "NULL" if x is None else f"{float(x):,.1f}"
+        top_disp = None if s == "01" else top
+        bot_disp = None if s == "01" else bot
+        return f"Stage {s:>2} | plug {fmt_num(plug):>8} | top {fmt_num(top_disp):>8} | bot {fmt_num(bot_disp):>8}\n"
         
     def upload_pdf(self):
         from tkinter import filedialog
@@ -699,71 +716,46 @@ class FracMasterApp(ctk.CTk):
         file_path = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
         if not file_path:
             return
+        self.last_pdf_path = file_path  # for future annotator
 
-        # Build well_map from your UI entries
+        # reset state
         self.perf_data = {}
         self.parsed_well_names = []
         self.current_well_index = 0
 
-        # Build well_map from your UI entries (with guarded page ranges)
+        # build well_map with guarded page ranges (your version already does this safely)
         well_map: dict[str, dict[str, int]] = {}
         for name, entry_start, entry_end, entry_clust in self.perf_well_data:
-            # raw strings from entries
             sp_txt = (entry_start.get() or "").strip()
             ep_txt = (entry_end.get() or "").strip()
             cl_txt = (entry_clust.get() or "").strip()
-
-            # defaults
-            start_page = 0
-            end_page = 0
-            clusters = 0
-
-            # parse clusters safely
+            start_page = end_page = clusters = 0
             try:
                 clusters = int(cl_txt) if cl_txt else 0
-            except:
-                clusters = 0
-
-            # parse pages safely
+            except:  # leave 0
+                pass
             try:
-                if sp_txt:
-                    start_page = max(1, int(sp_txt))   # clamp to 1+
-                if ep_txt:
-                    end_page = max(1, int(ep_txt))     # clamp to 1+
+                if sp_txt: start_page = max(1, int(sp_txt))
+                if ep_txt: end_page = max(1, int(ep_txt))
             except:
-                # if parsing fails, leave as 0 so auto-detect can kick in
-                start_page = 0
-                end_page = 0
-
-            # convenience: if user gave only start, assume single-page range
+                start_page = end_page = 0
             if start_page and not end_page:
                 end_page = start_page
-
-            # guard reversed ranges: End < Start → set End = Start
             if start_page and end_page and end_page < start_page:
                 end_page = start_page
+            well_map[name] = {"start_page": start_page, "end_page": end_page, "n_clusters": clusters}
 
-            well_map[name] = {
-                "start_page": start_page,  # 0,0 means: let parser auto-find pages
-                "end_page": end_page,
-                "n_clusters": clusters,
-            }
-
-
-        # --- RAW TEXT (for right-hand preview) ---
+        # RAW text → cache for popup
         try:
             pdf_text_by_well = perf_parser.extract_text_by_well(file_path, well_map)
+            self.last_pdf_text_by_well = pdf_text_by_well
         except Exception as e:
             self.result_box.delete("1.0", "end")
             self.result_box.insert("end", f"⚠️ Failed to read PDF: {e}")
             return
 
-        self.raw_preview_box.delete("1.0", "end")
-        for well, text in pdf_text_by_well.items():
-            self.raw_preview_box.insert("end", f"\n==== {well} PDF Text ====\n{text}\n")
-
-        # --- LOCAL STRUCTURED PARSE (new universal parser) ---
-        knobs = self._get_parser_knobs()
+        # Local parser (show first)
+        knobs = self._get_parser_knobs()  # assumes you already have this helper
         try:
             local_structured = perf_parser.parse_pdf_structured(
                 file_path,
@@ -772,14 +764,13 @@ class FracMasterApp(ctk.CTk):
                 window_below_plug=knobs["window_below_plug"],
                 prefer_explicit_top_bottom=knobs["prefer_explicit_top_bottom"],
                 split_digit_stage=True,
-                stage01_null=False,  # leave Stage 01 values intact; we null in GUI display
+                stage01_null=False,  # we null Stage 01 only in the GUI formatter
             )
         except Exception as e:
             local_structured = {}
             self.result_box.delete("1.0", "end")
             self.result_box.insert("end", f"🧰 Local Parser Results:\n⚠️ Parser error: {e}\n")
 
-        # Show LOCAL results first
         self.result_box.delete("1.0", "end")
         self.result_box.insert("end", "🧰 Local Parser Results:\n")
         if local_structured:
@@ -789,14 +780,13 @@ class FracMasterApp(ctk.CTk):
         else:
             self.result_box.insert("end", "⚠️ No rows parsed locally.\n")
 
-        # --- OB PARSE (optional validator) ---
+        # OB validator (we’ll add the Auto/Never/Always gate next)
         payload = {
             "pdf_text": pdf_text_by_well,
             "job_config": self.config_data,
             "well_map": well_map,
             "instructions": "Extract plug, top, and bottom perf for each stage per well.",
         }
-
         try:
             ob = call_ob_agent("perf_parser", payload)
         except Exception as e:
@@ -818,27 +808,23 @@ class FracMasterApp(ctk.CTk):
             self.result_box.insert("end", "⚠️ No perf data returned by OB.\n")
             return
 
-        # Append OB rows (with Stage 01 shown as NULL in display) + diff per stage
+        # If you already have _append_ob_comparison, keep using it:
         self._append_ob_comparison(ob_perf)
 
         if self.parsed_well_names:
             self._add_next_well_button()
 
 
+
     def _render_perf_results(self):
         for well, stages in self.perf_data.items():
             self.result_box.insert("end", f"\n=== {well}: Parsed {len(stages)} stages (Local) ===\n")
-            # sort just in case
             try:
                 stages_sorted = sorted(stages, key=lambda r: int(str(r[0]).zfill(2)))
             except Exception:
                 stages_sorted = stages
             for stg, plug, top, bot in stages_sorted:
-                s = str(stg).zfill(2)
-                # GUI rule: Stage 01 → NULL/null for top/bottom display
-                top_disp = "NULL" if s == "01" else ("NULL" if top is None else top)
-                bot_disp = "NULL" if s == "01" else ("NULL" if bot is None else bot)
-                self.result_box.insert("end", f"Stage {s}: plug={plug}, top={top_disp}, bot={bot_disp}\n")
+                self.result_box.insert("end", self._format_stage_row(stg, plug, top, bot))
 
         if self.perf_data:
             self._add_next_well_button()
@@ -876,10 +862,43 @@ class FracMasterApp(ctk.CTk):
         except Exception:
             pass
         for stg, plug, top, bot in stages:
-            s = str(stg).zfill(2)
-            top_disp = "NULL" if s == "01" else ("NULL" if top is None else top)
-            bot_disp = "NULL" if s == "01" else ("NULL" if bot is None else bot)
-            self.result_box.insert("end", f"Stage {s}: plug={plug}, top={top_disp}, bot={bot_disp}\n")
+            self.result_box.insert("end", self._format_stage_row(stg, plug, top, bot))
+            
+    def view_raw_text_popup(self):
+        if not getattr(self, "last_pdf_text_by_well", None):
+            # nothing cached yet
+            top = ctk.CTkToplevel(self)
+            top.title("Raw Text")
+            ctk.CTkLabel(top, text="No raw text cached. Upload a PDF first.").pack(padx=16, pady=16)
+            return
+
+        top = ctk.CTkToplevel(self)
+        top.title("Raw Extracted PDF Text")
+        top.geometry("900x600")
+
+        # Well picker
+        wells = list(self.last_pdf_text_by_well.keys())
+        sel = ctk.StringVar(value=wells[0] if wells else "")
+        bar = ctk.CTkFrame(top); bar.pack(fill="x", padx=8, pady=8)
+        ctk.CTkLabel(bar, text="Well:").pack(side="left", padx=(4,6))
+        picker = ctk.CTkOptionMenu(bar, values=wells, variable=sel)
+        picker.pack(side="left")
+
+        # Text box
+        scroll = ctk.CTkScrollableFrame(top, width=840, height=480)
+        scroll.pack(fill="both", expand=True, padx=8, pady=(0,8))
+        tb = ctk.CTkTextbox(scroll, wrap="none")
+        tb.pack(fill="both", expand=True, padx=6, pady=6)
+
+        def refresh_text(*_):
+            tb.delete("1.0", "end")
+            well = sel.get()
+            tb.insert("end", f"==== {well} PDF Text ====\n{self.last_pdf_text_by_well.get(well, '')}\n")
+
+        sel.trace_add("write", lambda *_: refresh_text())
+        refresh_text()
+
+
 
 
     def _add_next_well_button(self):
